@@ -1,6 +1,25 @@
-use std::os::fd::AsRawFd;
+use std::{ops::{Add, Sub}, os::fd::AsRawFd};
+
+use bit_vec::BitVec;
 
 pub mod utils;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Port(utils::OpenBoundedU8<0, 32>);
+
+impl Port {
+    pub const fn new(port: u8) -> Option<Self> {
+        if let Some(num) = utils::OpenBoundedU8::new(port) {
+            Some(Self(num))
+        } else {
+            None
+        }
+    }
+
+    pub const fn get(&self) -> u8 {
+        self.0.get()
+    }
+}
 
 #[derive(Debug, num_enum::TryFromPrimitive, Default, Clone, Copy)]
 #[repr(i32)]
@@ -274,7 +293,7 @@ bitflags::bitflags! {
 pub struct PortStat {
     status: PortStatus,
     change: PortChange,
-    index: u8,
+    index: Port,
     flags: u8,
 }
 
@@ -292,6 +311,7 @@ pub enum Work {
 
 pub struct Vhci {
     dev: std::fs::File,
+    open_ports: BitVec,
     controller_id: i32,
     usb_busnum: i32,
     bus_id: Box<str>,
@@ -322,6 +342,7 @@ impl Vhci {
 
         Ok(Self {
             dev: device,
+            open_ports: BitVec::from_elem(num_ports.get() as usize, false),
             controller_id: register.id,
             usb_busnum: register.usb_busnum,
             bus_id: std::str::from_utf8(&register.bus_id).unwrap().into(),
@@ -427,11 +448,15 @@ impl Vhci {
         }
     }
 
-    pub fn port_connect(
-        &self,
-        port: utils::OpenBoundedU8<0, 32>,
-        data_rate: DataRate,
-    ) -> std::io::Result<()> {
+    pub fn port_connect_any(&mut self, data_rate: DataRate) -> std::io::Result<Port> {
+        let port =
+            Port::new(self.open_ports.iter().position(|in_use| !in_use).unwrap().add(1) as u8).unwrap();
+        dbg!(port);
+        self.port_connect(port, data_rate)?;
+        Ok(port)
+    }
+
+    pub fn port_connect(&mut self, port: Port, data_rate: DataRate) -> std::io::Result<()> {
         let mut status = PortStatus::CONNECTION;
         match data_rate {
             DataRate::Full => (),
@@ -452,10 +477,12 @@ impl Vhci {
                 .map_err(std::io::Error::from)?
         };
 
+        self.open_ports.set(port.get().sub(1) as usize, true);
+
         Ok(())
     }
 
-    pub fn port_disconnect(&self, port: utils::OpenBoundedU8<0, 32>) -> std::io::Result<()> {
+    pub fn port_disconnect(&self, port: Port) -> std::io::Result<()> {
         let mut port_stat = ioctl::IocPortStat {
             change: PortChange::CONNECTION.bits(),
             index: port.get(),
@@ -471,7 +498,7 @@ impl Vhci {
         Ok(())
     }
 
-    pub fn port_disable(&self, port: utils::OpenBoundedU8<0, 32>) -> std::io::Result<()> {
+    pub fn port_disable(&self, port: Port) -> std::io::Result<()> {
         let mut port_stat = ioctl::IocPortStat {
             change: PortChange::ENABLE.bits(),
             index: port.get(),
@@ -487,7 +514,7 @@ impl Vhci {
         Ok(())
     }
 
-    pub fn port_resumed(&self, port: utils::OpenBoundedU8<0, 32>) -> std::io::Result<()> {
+    pub fn port_resumed(&self, port: Port) -> std::io::Result<()> {
         let mut port_stat = ioctl::IocPortStat {
             change: PortChange::SUSPEND.bits(),
             index: port.get(),
@@ -503,11 +530,7 @@ impl Vhci {
         Ok(())
     }
 
-    pub fn port_overcurrent(
-        &self,
-        port: utils::OpenBoundedU8<0, 32>,
-        set: bool,
-    ) -> std::io::Result<()> {
+    pub fn port_overcurrent(&self, port: Port, set: bool) -> std::io::Result<()> {
         let mut port_stat = ioctl::IocPortStat {
             change: PortChange::OVERCURRENT.bits(),
             index: port.get(),
@@ -526,11 +549,7 @@ impl Vhci {
         Ok(())
     }
 
-    pub fn port_reset_done(
-        &self,
-        port: utils::OpenBoundedU8<0, 32>,
-        enable: bool,
-    ) -> std::io::Result<()> {
+    pub fn port_reset_done(&self, port: Port, enable: bool) -> std::io::Result<()> {
         let mut port_stat = ioctl::IocPortStat {
             index: port.get(),
             change: PortChange::RESET.bits(),
@@ -557,7 +576,7 @@ impl From<ioctl::IocPortStat> for PortStat {
         Self {
             status: PortStatus::from_bits(port_stat.status).unwrap(),
             change: PortChange::from_bits(port_stat.change).unwrap(),
-            index: port_stat.index,
+            index: Port::new(port_stat.index).unwrap(),
             flags: port_stat.flags,
         }
     }
@@ -869,4 +888,23 @@ mod ioctl {
         USB_VHCI_HCD_IOCGIVEBACK,
         IocGiveback
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const NUM_PORTS: utils::OpenBoundedU8<0, 32> = utils::OpenBoundedU8::new(1).unwrap();
+
+    #[test]
+    fn can_create_vhci() {
+        let _vhci = Vhci::open(NUM_PORTS).unwrap();
+    }
+
+    #[test]
+    fn can_connect_disconnect_port() {
+        let mut vhci = Vhci::open(NUM_PORTS).unwrap();
+        let port = vhci.port_connect_any(DataRate::High).unwrap();
+        vhci.port_disconnect(port).unwrap();
+    }
 }

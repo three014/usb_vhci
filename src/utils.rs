@@ -4,12 +4,12 @@ pub enum TimeoutMillis {
 }
 
 #[repr(transparent)]
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct OpenBoundedU8<const LOWER: u8, const UPPER: u8>(u8);
 
 impl<const LOWER: u8, const UPPER: u8> OpenBoundedU8<LOWER, UPPER> {
     pub const fn new(num: u8) -> Option<Self> {
-        if LOWER > num || UPPER < num {
+        if LOWER >= num || UPPER <= num {
             None
         } else {
             Some(Self(num))
@@ -27,7 +27,7 @@ pub struct ClosedBoundedI16<const LOWER: i16, const UPPER: i16>(i16);
 
 impl<const LOWER: i16, const UPPER: i16> ClosedBoundedI16<LOWER, UPPER> {
     pub const fn new(num: i16) -> Option<Self> {
-        if LOWER >= num || UPPER <= num {
+        if LOWER > num || UPPER < num {
             None
         } else {
             Some(Self(num))
