@@ -1,51 +1,11 @@
-use std::os::fd::AsRawFd;
+use std::{mem::MaybeUninit, ops::Deref, os::fd::AsRawFd};
 
-pub mod utils {
-    pub enum TimeoutMillis {
-        Unlimited,
-        Time(ClosedBoundedI16<1, 1000>),
-    }
+pub mod utils;
 
-    #[repr(transparent)]
-    #[derive(Debug, Clone, Copy)]
-    pub struct OpenBoundedU8<const LOWER: u8, const UPPER: u8>(u8);
-
-    impl<const LOWER: u8, const UPPER: u8> OpenBoundedU8<LOWER, UPPER> {
-        pub const fn new(num: u8) -> Option<Self> {
-            if LOWER > num || UPPER < num {
-                None
-            } else {
-                Some(Self(num))
-            }
-        }
-
-        pub const fn get(&self) -> u8 {
-            self.0
-        }
-    }
-
-    #[repr(transparent)]
-    #[derive(Debug, Clone, Copy)]
-    pub struct ClosedBoundedI16<const LOWER: i16, const UPPER: i16>(i16);
-
-    impl<const LOWER: i16, const UPPER: i16> ClosedBoundedI16<LOWER, UPPER> {
-        pub const fn new(num: i16) -> Option<Self> {
-            if LOWER >= num || UPPER <= num {
-                None
-            } else {
-                Some(Self(num))
-            }
-        }
-
-        pub const fn get(&self) -> i16 {
-            self.0
-        }
-    }
-}
-
-#[derive(Debug, num_enum::TryFromPrimitive)]
+#[derive(Debug, num_enum::TryFromPrimitive, Default, Clone, Copy)]
 #[repr(i32)]
 pub enum Status {
+    #[default]
     Success = 0x00000000,
     Pending = 0x10000001,
     ShortPacket = 0x10000002,
@@ -64,6 +24,43 @@ pub enum Status {
     AllIsoPacketsFailed = 0x78000001,
 }
 
+impl Status {
+    pub const fn to_errno_raw(&self, is_iso: bool) -> i32 {
+        use nix::libc::*;
+        match self {
+            Status::Success => 0,
+            Status::Pending => -EINPROGRESS,
+            Status::ShortPacket => -EREMOTEIO,
+            Status::Error => {
+                if is_iso {
+                    -EXDEV
+                } else {
+                    -EPROTO
+                }
+            }
+            Status::Canceled => -ECONNRESET,
+            Status::TimedOut => -ETIMEDOUT,
+            Status::DeviceDisabled => -ESHUTDOWN,
+            Status::DeviceDisconnected => -ENODEV,
+            Status::BitStuff => -EPROTO,
+            Status::Crc => -EILSEQ,
+            Status::NoResponse => -ETIME,
+            Status::Babble => -EOVERFLOW,
+            Status::Stall => -EPIPE,
+            Status::BufferOverrun => -ECOMM,
+            Status::BufferUnderrun => -ENOSR,
+            Status::AllIsoPacketsFailed => {
+                if is_iso {
+                    -EINVAL
+                } else {
+                    -EPROTO
+                }
+            }
+        }
+    }
+}
+
+#[derive(Default, Debug, Clone)]
 pub struct IsoPacket {
     offset: u32,
     packet_length: i32,
@@ -75,19 +72,20 @@ pub struct UrbIso {
     status: Status,
     handle: u64,
     /// buffer length is the actual length for iso urbs
-    buffer_length: i32,
+    buffer: Box<[u8]>,
+    iso_packets: Box<[IsoPacket]>,
+    error_count: i32,
     /// address
     devadr: u8,
     /// endpoint
     epadr: u8,
-    packet_count: i32,
+    interval: i32,
 }
 
 pub struct UrbInt {
     status: Status,
     handle: u64,
-    buffer_length: i32,
-    buffer_actual: i32,
+    buffer: Vec<u8>,
     devadr: u8,
     epadr: u8,
     interval: i32,
@@ -96,8 +94,7 @@ pub struct UrbInt {
 pub struct UrbControl {
     status: Status,
     handle: u64,
-    buffer_length: i32,
-    buffer_actual: i32,
+    buffer: Vec<u8>,
     devadr: u8,
     epadr: u8,
     w_value: u16,
@@ -110,8 +107,7 @@ pub struct UrbControl {
 pub struct UrbBulk {
     status: Status,
     handle: u64,
-    buffer_length: i32,
-    buffer_actual: i32,
+    buffer: Vec<u8>,
     devadr: u8,
     epadr: u8,
     flags: u16,
@@ -125,17 +121,108 @@ pub enum Urb {
 }
 
 impl Urb {
-    pub const fn requires_fetch_work(&self) -> bool {
+    pub const fn handle(&self) -> u64 {
         match self {
-            Urb::Iso(urb_iso) => urb_iso.packet_count != 0,
-            Urb::Int(urb_int) => urb_int.buffer_actual != 0,
-            Urb::Ctrl(urb_control) => urb_control.buffer_actual != 0,
-            Urb::Bulk(urb_bulk) => urb_bulk.buffer_actual != 0,
+            Urb::Iso(urb_iso) => urb_iso.handle,
+            Urb::Int(urb_int) => urb_int.handle,
+            Urb::Ctrl(urb_control) => urb_control.handle,
+            Urb::Bulk(urb_bulk) => urb_bulk.handle,
+        }
+    }
+
+    /// The buffer's capacity (I know)
+    ///
+    /// The actual length of the buffer is found
+    /// with [`Urb::buffer_actual`]
+    pub fn buffer_length(&self) -> usize {
+        match self {
+            Urb::Iso(urb_iso) => urb_iso.buffer.len(),
+            Urb::Int(urb_int) => urb_int.buffer.capacity(),
+            Urb::Ctrl(urb_control) => urb_control.buffer.capacity(),
+            Urb::Bulk(urb_bulk) => urb_bulk.buffer.capacity(),
+        }
+    }
+
+    pub fn buffer_actual(&self) -> usize {
+        match self {
+            Urb::Iso(urb_iso) => urb_iso.buffer.len(),
+            Urb::Int(urb_int) => urb_int.buffer.len(),
+            Urb::Ctrl(urb_control) => urb_control.buffer.len(),
+            Urb::Bulk(urb_bulk) => urb_bulk.buffer.len(),
+        }
+    }
+
+    pub fn packet_count(&self) -> usize {
+        match self {
+            Urb::Iso(urb_iso) => urb_iso.iso_packets.len(),
+            _ => 0,
+        }
+    }
+
+    pub fn requires_fetch_data(&self) -> bool {
+        match self {
+            Urb::Iso(urb_iso) => urb_iso.iso_packets.len() != 0,
+            Urb::Int(urb_int) => urb_int.buffer.len() != 0,
+            Urb::Ctrl(urb_control) => urb_control.buffer.len() != 0,
+            Urb::Bulk(urb_bulk) => urb_bulk.buffer.len() != 0,
+        }
+    }
+
+    pub fn buffer(&self) -> &[u8] {
+        match self {
+            Urb::Iso(urb_iso) => &urb_iso.buffer,
+            Urb::Int(urb_int) => &urb_int.buffer,
+            Urb::Ctrl(urb_control) => &urb_control.buffer,
+            Urb::Bulk(urb_bulk) => &urb_bulk.buffer,
+        }
+    }
+
+    pub fn buffer_mut(&mut self) -> &mut [u8] {
+        match self {
+            Urb::Iso(urb_iso) => &mut urb_iso.buffer,
+            Urb::Int(urb_int) => &mut urb_int.buffer,
+            Urb::Ctrl(urb_control) => &mut urb_control.buffer,
+            Urb::Bulk(urb_bulk) => &mut urb_bulk.buffer,
+        }
+    }
+
+    pub const fn devadr(&self) -> u8 {
+        match self {
+            Urb::Iso(urb_iso) => urb_iso.devadr,
+            Urb::Int(urb_int) => urb_int.devadr,
+            Urb::Ctrl(urb_control) => urb_control.devadr,
+            Urb::Bulk(urb_bulk) => urb_bulk.devadr,
+        }
+    }
+
+    pub const fn status_to_errno_raw(&self) -> i32 {
+        let (status, is_iso) = match self {
+            Urb::Iso(urb_iso) => (urb_iso.status, true),
+            Urb::Int(urb_int) => (urb_int.status, false),
+            Urb::Ctrl(urb_control) => (urb_control.status, false),
+            Urb::Bulk(urb_bulk) => (urb_bulk.status, false),
+        };
+        status.to_errno_raw(is_iso)
+    }
+
+    pub const fn epadr(&self) -> u8 {
+        match self {
+            Urb::Iso(urb_iso) => urb_iso.epadr,
+            Urb::Int(urb_int) => urb_int.epadr,
+            Urb::Ctrl(urb_control) => urb_control.epadr,
+            Urb::Bulk(urb_bulk) => urb_bulk.epadr,
+        }
+    }
+
+    pub const fn error_count(&self) -> i32 {
+        match self {
+            Urb::Iso(urb_iso) => urb_iso.error_count,
+            _ => 0,
         }
     }
 }
 
-#[derive(num_enum::TryFromPrimitive)]
+#[derive(num_enum::TryFromPrimitive, num_enum::IntoPrimitive)]
 #[repr(u16)]
 pub enum PortStatus {
     Connection = 0x0001,
@@ -216,6 +303,12 @@ impl Device {
         })
     }
 
+    pub fn fetch_work(&self) -> std::io::Result<Work> {
+        self.fetch_work_timeout(utils::TimeoutMillis::Time(
+            utils::ClosedBoundedI16::new(100).unwrap(),
+        ))
+    }
+
     pub fn fetch_work_timeout(&self, timeout: utils::TimeoutMillis) -> std::io::Result<Work> {
         let mut work = ioctl::IocWork::default();
         work.timeout = match timeout {
@@ -234,6 +327,90 @@ impl Device {
 
         work.try_into().map_err(|nix| std::io::Error::from(nix))
     }
+
+    pub fn fetch_data(&self, urb: &mut Urb) -> std::io::Result<()> {
+        let mut urb_data = ioctl::IocUrbData::default();
+        urb_data.handle = urb.handle();
+        urb_data.buffer_length = urb.buffer_length() as i32;
+        urb_data.packet_count = urb.packet_count() as i32;
+        urb_data.buffer = urb.buffer_mut().as_mut_ptr().cast();
+        let mut iso_packets = Vec::with_capacity(urb.packet_count());
+        if urb.packet_count() > 0 {
+            urb_data.iso_packets = iso_packets.as_mut_ptr();
+        }
+
+        // SAFETY: TODO: We allocate our own buffer for the iso packets,
+        //         and that shouuuuuld last throughout this call?
+        //         After the ioctl call, `iso_packets` should have the
+        //         same len as the buffer in the urb??
+        unsafe {
+            ioctl::usb_vhci_fetchdata(self.dev.as_raw_fd(), &raw mut urb_data)
+                .map_err(|nix| std::io::Error::from(nix))?;
+            urb_data.iso_packets = std::ptr::null_mut();
+            iso_packets.set_len(urb.packet_count());
+        };
+
+        match urb {
+            Urb::Iso(urb_iso) => {
+                for (iso_packet, ioc_iso_packet) in urb_iso.iso_packets.iter_mut().zip(iso_packets)
+                {
+                    iso_packet.offset = ioc_iso_packet.offset;
+                    iso_packet.packet_length = ioc_iso_packet.packet_length as i32;
+                    iso_packet.packet_actual = 0;
+                    iso_packet.status = Status::Pending;
+                }
+            }
+            _ => (),
+        }
+
+        Ok(())
+    }
+
+    pub fn giveback(&self, urb: &mut Urb) -> std::io::Result<()> {
+        let mut giveback = ioctl::IocGiveback::default();
+        giveback.handle = urb.handle();
+        giveback.status = urb.status_to_errno_raw();
+        giveback.buffer_actual = urb.buffer_actual() as i32;
+
+        let mut iso_packets: Vec<ioctl::IocIsoPacketGiveback> =
+            Vec::with_capacity(urb.packet_count());
+
+        if is_in(urb.epadr()) != 0 && giveback.buffer_actual > 0 {
+            giveback.buffer = urb.buffer_mut().as_mut_ptr().cast();
+        }
+        match urb {
+            Urb::Iso(ref urb_iso) => {
+                for (iso_packet, ioc_iso_packet_giveback) in
+                    urb_iso.iso_packets.iter().zip(iso_packets.iter_mut())
+                {
+                    ioc_iso_packet_giveback.status = iso_packet.status.to_errno_raw(true);
+                    ioc_iso_packet_giveback.packet_actual = iso_packet.packet_actual as u32;
+                }
+                giveback.iso_packets = iso_packets.as_mut_ptr();
+                giveback.packet_count = urb.packet_count() as i32;
+                giveback.error_count = urb.error_count();
+            }
+            _ => (),
+        }
+
+        // SAFETY: TODO: We allocate our own buffer for the iso packets,
+        //         and that shouuuuuld last throughout this call?
+        unsafe {
+            match ioctl::usb_vhci_giveback(self.dev.as_raw_fd(), &raw mut giveback) {
+                Err(nix::Error::ECANCELED) | Ok(_) => Ok(()),
+                Err(nix) => Err(std::io::Error::from(nix)),
+            }
+        }
+    }
+
+    pub fn port_connect(
+        &self,
+        port: utils::OpenBoundedU8<0, { u8::MAX }>,
+        data_rate: DataRate,
+    ) -> std::io::Result<()> {
+        let mut port_stat = ioctl::IocPortStat::default();
+        todo!("Convert Port Status into a bitflag?")
+    }
 }
 
 impl From<ioctl::IocPortStat> for PortStat {
@@ -249,6 +426,10 @@ impl From<ioctl::IocPortStat> for PortStat {
 
 const fn is_out(epadr: u8) -> u8 {
     !((epadr) & 0x80)
+}
+
+const fn is_in(epadr: u8) -> u8 {
+    !is_out(epadr)
 }
 
 impl TryFrom<ioctl::IocWork> for Work {
@@ -271,19 +452,31 @@ impl TryFrom<ioctl::IocWork> for Work {
                     ioctl::USB_VHCI_URB_TYPE_ISO => Urb::Iso(UrbIso {
                         status: Status::Pending,
                         handle: work.handle,
-                        buffer_length: iocurb.buffer_length,
+                        buffer: vec![0; iocurb.buffer_length.try_into().unwrap()]
+                            .into_boxed_slice(),
+                        error_count: 0,
                         devadr: iocurb.address,
                         epadr: iocurb.endpoint,
-                        packet_count: iocurb.packet_count,
+                        iso_packets: vec![
+                            IsoPacket::default();
+                            iocurb.packet_count.try_into().unwrap()
+                        ]
+                        .into_boxed_slice(),
+                        interval: iocurb.interval,
                     }),
                     ioctl::USB_VHCI_URB_TYPE_INT => Urb::Int(UrbInt {
                         status: Status::Pending,
                         handle: work.handle,
-                        buffer_length: iocurb.buffer_length,
-                        buffer_actual: if is_out(iocurb.endpoint) != 0 {
-                            iocurb.buffer_length
-                        } else {
-                            0
+                        buffer: {
+                            let mut buf = Vec::new();
+                            buf.reserve_exact(iocurb.buffer_length.try_into().unwrap());
+                            let actual_len = if is_out(iocurb.endpoint) != 0 {
+                                iocurb.buffer_length
+                            } else {
+                                0
+                            };
+                            buf.resize(actual_len.try_into().unwrap(), 0);
+                            buf
                         },
                         devadr: iocurb.address,
                         epadr: iocurb.endpoint,
@@ -292,11 +485,16 @@ impl TryFrom<ioctl::IocWork> for Work {
                     ioctl::USB_VHCI_URB_TYPE_CONTROL => Urb::Ctrl(UrbControl {
                         status: Status::Pending,
                         handle: work.handle,
-                        buffer_length: iocurb.buffer_length,
-                        buffer_actual: if is_out(iocurb.endpoint) != 0 {
-                            iocurb.buffer_length
-                        } else {
-                            0
+                        buffer: {
+                            let mut buf = Vec::new();
+                            buf.reserve_exact(iocurb.buffer_length.try_into().unwrap());
+                            let actual_len = if is_out(iocurb.endpoint) != 0 {
+                                iocurb.buffer_length
+                            } else {
+                                0
+                            };
+                            buf.resize(actual_len.try_into().unwrap(), 0);
+                            buf
                         },
                         devadr: iocurb.address,
                         epadr: iocurb.endpoint,
@@ -309,11 +507,16 @@ impl TryFrom<ioctl::IocWork> for Work {
                     ioctl::USB_VHCI_URB_TYPE_BULK => Urb::Bulk(UrbBulk {
                         status: Status::Pending,
                         handle: work.handle,
-                        buffer_length: iocurb.buffer_length,
-                        buffer_actual: if is_out(iocurb.endpoint) != 0 {
-                            iocurb.buffer_length
-                        } else {
-                            0
+                        buffer: {
+                            let mut buf = Vec::new();
+                            buf.reserve_exact(iocurb.buffer_length.try_into().unwrap());
+                            let actual_len = if is_out(iocurb.endpoint) != 0 {
+                                iocurb.buffer_length
+                            } else {
+                                0
+                            };
+                            buf.resize(actual_len.try_into().unwrap(), 0);
+                            buf
                         },
                         devadr: iocurb.address,
                         epadr: iocurb.endpoint,
@@ -344,6 +547,8 @@ mod ioctl {
     pub const USB_VHCI_HCD_IOCFETCHWORK: u8 = 2;
     pub const USB_VHCI_HCD_IOCGIVEBACK: u8 = 3;
     pub const USB_VHCI_HCD_IOCGIVEBACK32: u8 = 3;
+    pub const USB_VHCI_HCD_IOCFETCHDATA: u8 = 4;
+    pub const USB_VHCI_HCD_IOCFETCHDATA32: u8 = 4;
 
     pub const USB_VHCI_PORT_STAT_FLAG_RESUMING: u8 = 0x01;
 
@@ -450,7 +655,7 @@ mod ioctl {
         IocWork
     );
 
-    #[derive(Clone, Copy)]
+    #[derive(Clone, Copy, Default)]
     #[repr(C)]
     pub struct IocIsoPacketData {
         pub offset: u32,
@@ -467,7 +672,26 @@ mod ioctl {
         pub packet_count: i32,
     }
 
-    #[derive(Clone, Copy)]
+    impl Default for IocUrbData {
+        fn default() -> Self {
+            Self {
+                handle: 0,
+                buffer: std::ptr::null_mut(),
+                iso_packets: std::ptr::null_mut(),
+                buffer_length: 0,
+                packet_count: 0,
+            }
+        }
+    }
+
+    ioctl_write_ptr!(
+        usb_vhci_fetchdata,
+        USB_VHCI_HCD_IOC_MAGIC,
+        USB_VHCI_HCD_IOCFETCHDATA,
+        IocUrbData
+    );
+
+    #[derive(Clone, Copy, Default)]
     #[repr(C)]
     pub struct IocIsoPacketGiveback {
         pub packet_actual: u32,
@@ -477,13 +701,27 @@ mod ioctl {
     #[derive(Clone, Copy)]
     #[repr(C)]
     pub struct IocGiveback {
-        handle: u64,
-        buffer: *mut c_void,
-        iso_packets: *mut IocIsoPacketGiveback,
-        status: i32,
-        buffer_actual: i32,
-        packet_count: i32,
-        error_count: i32,
+        pub handle: u64,
+        pub buffer: *mut c_void,
+        pub iso_packets: *mut IocIsoPacketGiveback,
+        pub status: i32,
+        pub buffer_actual: i32,
+        pub packet_count: i32,
+        pub error_count: i32,
+    }
+
+    impl Default for IocGiveback {
+        fn default() -> Self {
+            Self {
+                handle: 0,
+                buffer: std::ptr::null_mut(),
+                iso_packets: std::ptr::null_mut(),
+                status: 0,
+                buffer_actual: 0,
+                packet_count: 0,
+                error_count: 0,
+            }
+        }
     }
 
     ioctl_write_ptr!(
