@@ -1,4 +1,4 @@
-use std::{mem::MaybeUninit, ops::Deref, os::fd::AsRawFd};
+use std::os::fd::AsRawFd;
 
 pub mod utils;
 
@@ -56,6 +56,34 @@ impl Status {
                     -EPROTO
                 }
             }
+        }
+    }
+
+    pub const fn from_errno_raw(errno: i32, is_iso: bool) -> Self {
+        use nix::libc::*;
+        match -errno {
+            0 => Status::Success,
+            EINPROGRESS => Status::Pending,
+            EREMOTEIO => Status::ShortPacket,
+            ENOENT | ECONNRESET => Status::Canceled,
+            ETIMEDOUT => Status::TimedOut,
+            ESHUTDOWN => Status::DeviceDisabled,
+            ENODEV => Status::DeviceDisconnected,
+            EPROTO => Status::BitStuff,
+            EILSEQ => Status::Crc,
+            ETIME => Status::NoResponse,
+            EOVERFLOW => Status::Babble,
+            EPIPE => Status::Stall,
+            ECOMM => Status::BufferOverrun,
+            ENOSR => Status::BufferUnderrun,
+            EINVAL => {
+                if is_iso {
+                    Status::AllIsoPacketsFailed
+                } else {
+                    Status::Error
+                }
+            }
+            _ => Status::Error,
         }
     }
 }
@@ -222,27 +250,25 @@ impl Urb {
     }
 }
 
-#[derive(num_enum::TryFromPrimitive, num_enum::IntoPrimitive)]
-#[repr(u16)]
-pub enum PortStatus {
-    Connection = 0x0001,
-    Enable = 0x0002,
-    Suspend = 0x0004,
-    Overcurrent = 0x0008,
-    Reset = 0x0010,
-    Power = 0x0100,
-    LowSpeed = 0x0200,
-    HighSpeed = 0x0400,
-}
+bitflags::bitflags! {
+    pub struct PortStatus: u16 {
+        const CONNECTION = 0x0001;
+        const ENABLE = 0x0002;
+        const SUSPEND = 0x0004;
+        const OVERCURRENT = 0x0008;
+        const RESET = 0x0010;
+        const POWER = 0x0100;
+        const LOW_SPEED = 0x0200;
+        const HIGH_SPEED = 0x0400;
+    }
 
-#[derive(num_enum::TryFromPrimitive)]
-#[repr(u16)]
-pub enum PortChange {
-    Connection = 0x0001,
-    Enable = 0x0002,
-    Suspend = 0x0004,
-    Overcurrent = 0x0008,
-    Reset = 0x0010,
+    pub struct PortChange: u16 {
+        const CONNECTION = 0x0001;
+        const ENABLE = 0x0002;
+        const SUSPEND = 0x0004;
+        const OVERCURRENT = 0x0008;
+        const RESET = 0x0010;
+    }
 }
 
 pub struct PortStat {
@@ -264,7 +290,7 @@ pub enum Work {
     PortStat(PortStat),
 }
 
-pub struct Device {
+pub struct Vhci {
     dev: std::fs::File,
     controller_id: i32,
     usb_busnum: i32,
@@ -273,7 +299,7 @@ pub struct Device {
 
 static USB_VHCI_DEVICE_FILE: &str = "/dev/usb-vhci";
 
-impl Device {
+impl Vhci {
     pub fn open(num_ports: utils::OpenBoundedU8<0, 32>) -> std::io::Result<Self> {
         let device = std::fs::OpenOptions::new()
             .read(true)
@@ -312,7 +338,7 @@ impl Device {
     pub fn fetch_work_timeout(&self, timeout: utils::TimeoutMillis) -> std::io::Result<Work> {
         let mut work = ioctl::IocWork::default();
         work.timeout = match timeout {
-            utils::TimeoutMillis::Unlimited => -1,
+            utils::TimeoutMillis::Unlimited => ioctl::USB_VHCI_TIMEOUT_INFINITE,
             utils::TimeoutMillis::Time(time) => time.get(),
         };
 
@@ -405,19 +431,122 @@ impl Device {
 
     pub fn port_connect(
         &self,
-        port: utils::OpenBoundedU8<0, { u8::MAX }>,
+        port: utils::OpenBoundedU8<0, 32>,
         data_rate: DataRate,
     ) -> std::io::Result<()> {
         let mut port_stat = ioctl::IocPortStat::default();
-        todo!("Convert Port Status into a bitflag?")
+        let mut status = PortStatus::CONNECTION;
+        match data_rate {
+            DataRate::Full => (),
+            DataRate::Low => status |= PortStatus::LOW_SPEED,
+            DataRate::High => status |= PortStatus::HIGH_SPEED,
+        }
+        port_stat.status = status.bits();
+        port_stat.change = PortChange::CONNECTION.bits();
+        port_stat.index = port.get();
+
+        // SAFETY: Both the file descriptor and raw mut pointer
+        //         are valid for the duration of this ioctl call.
+        unsafe {
+            ioctl::usb_vhci_portstat(self.dev.as_raw_fd(), &raw mut port_stat)
+                .map_err(|nix| std::io::Error::from(nix))?
+        };
+
+        Ok(())
+    }
+
+    pub fn port_disconnect(&self, port: utils::OpenBoundedU8<0, 32>) -> std::io::Result<()> {
+        let mut port_stat = ioctl::IocPortStat::default();
+        port_stat.change = PortChange::CONNECTION.bits();
+        port_stat.index = port.get();
+
+        // SAFETY: Both the file descriptor and raw mut pointer
+        //         are valid for the duration of this ioctl call.
+        unsafe {
+            ioctl::usb_vhci_portstat(self.dev.as_raw_fd(), &raw mut port_stat)
+                .map_err(|nix| std::io::Error::from(nix))?
+        };
+        Ok(())
+    }
+
+    pub fn port_disable(&self, port: utils::OpenBoundedU8<0, 32>) -> std::io::Result<()> {
+        let mut port_stat = ioctl::IocPortStat::default();
+        port_stat.change = PortChange::ENABLE.bits();
+        port_stat.index = port.get();
+
+        // SAFETY: Both the file descriptor and raw mut pointer
+        //         are valid for the duration of this ioctl call.
+        unsafe {
+            ioctl::usb_vhci_portstat(self.dev.as_raw_fd(), &raw mut port_stat)
+                .map_err(|nix| std::io::Error::from(nix))?
+        };
+        Ok(())
+    }
+
+    pub fn port_resumed(&self, port: utils::OpenBoundedU8<0, 32>) -> std::io::Result<()> {
+        let mut port_stat = ioctl::IocPortStat::default();
+        port_stat.change = PortChange::SUSPEND.bits();
+        port_stat.index = port.get();
+
+        // SAFETY: Both the file descriptor and raw mut pointer
+        //         are valid for the duration of this ioctl call.
+        unsafe {
+            ioctl::usb_vhci_portstat(self.dev.as_raw_fd(), &raw mut port_stat)
+                .map_err(|nix| std::io::Error::from(nix))?
+        };
+        Ok(())
+    }
+
+    pub fn port_overcurrent(
+        &self,
+        port: utils::OpenBoundedU8<0, 32>,
+        set: bool,
+    ) -> std::io::Result<()> {
+        let mut port_stat = ioctl::IocPortStat::default();
+        port_stat.change = PortChange::OVERCURRENT.bits();
+        port_stat.index = port.get();
+        if set {
+            port_stat.status = PortStatus::OVERCURRENT.bits();
+        }
+
+        // SAFETY: Both the file descriptor and raw mut pointer
+        //         are valid for the duration of this ioctl call.
+        unsafe {
+            ioctl::usb_vhci_portstat(self.dev.as_raw_fd(), &raw mut port_stat)
+                .map_err(|nix| std::io::Error::from(nix))?
+        };
+        Ok(())
+    }
+
+    pub fn port_reset_done(
+        &self,
+        port: utils::OpenBoundedU8<0, 32>,
+        enable: bool,
+    ) -> std::io::Result<()> {
+        let mut port_stat = ioctl::IocPortStat::default();
+        port_stat.index = port.get();
+        port_stat.change = PortChange::RESET.bits();
+        if enable {
+            port_stat.status = PortStatus::ENABLE.bits();
+        } else {
+            port_stat.change |= PortChange::ENABLE.bits();
+        }
+
+        // SAFETY: Both the file descriptor and raw mut pointer
+        //         are valid for the duration of this ioctl call.
+        unsafe {
+            ioctl::usb_vhci_portstat(self.dev.as_raw_fd(), &raw mut port_stat)
+                .map_err(|nix| std::io::Error::from(nix))?
+        };
+        Ok(())
     }
 }
 
 impl From<ioctl::IocPortStat> for PortStat {
     fn from(port_stat: ioctl::IocPortStat) -> Self {
         Self {
-            status: port_stat.status.try_into().unwrap(),
-            change: port_stat.change.try_into().unwrap(),
+            status: PortStatus::from_bits(port_stat.status).unwrap(),
+            change: PortChange::from_bits(port_stat.change).unwrap(),
             index: port_stat.index,
             flags: port_stat.flags,
         }
