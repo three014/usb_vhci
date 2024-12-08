@@ -1,10 +1,11 @@
 use bit_vec::BitVec;
 use std::{
     ops::{Add, Sub},
-    os::fd::AsRawFd,
+    os::{fd::AsRawFd, unix::fs::OpenOptionsExt},
 };
 
 pub mod utils;
+pub use nix::libc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Endpoint(u8);
@@ -376,6 +377,7 @@ impl Vhci {
         let device = std::fs::OpenOptions::new()
             .read(true)
             .write(true)
+            .custom_flags(nix::libc::O_NONBLOCK)
             .open(USB_VHCI_DEVICE_FILE)?;
 
         let mut ioc_register = ioctl::IocRegister {
@@ -955,13 +957,13 @@ mod tests {
     #[test]
     fn can_create_vhci() {
         let _vhci = Vhci::open(NUM_PORTS).unwrap();
-        dbg!(_vhci);
     }
 
     #[test]
     fn can_connect_disconnect_port() {
         let mut vhci = Vhci::open(NUM_PORTS).unwrap();
         let port = vhci.port_connect_any(DataRate::High).unwrap();
+        dbg!(&vhci);
         vhci.port_disconnect(port).unwrap();
     }
 }
