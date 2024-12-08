@@ -1,4 +1,5 @@
 use bit_vec::BitVec;
+use bitflags::bitflags;
 use std::{
     ops::{Add, Sub},
     os::{fd::AsRawFd, unix::fs::OpenOptionsExt},
@@ -150,6 +151,14 @@ impl Status {
     }
 }
 
+bitflags! {
+    pub struct UrbFlags: u16 {
+        const SHORT_NOT_OK = 0x0001;
+        const ISO_ASAP = 0x0002;
+        const ZERO_PACKET = 0x0040;
+    }
+}
+
 #[derive(Default, Debug, Clone)]
 pub struct IsoPacket {
     offset: u32,
@@ -169,6 +178,7 @@ pub struct UrbIso {
     devadr: u8,
     /// endpoint
     epadr: Endpoint,
+    asap: bool,
     interval: i32,
 }
 
@@ -178,6 +188,7 @@ pub struct UrbInt {
     buffer: Vec<u8>,
     devadr: u8,
     epadr: Endpoint,
+    short_not_ok: bool,
     interval: i32,
 }
 
@@ -200,7 +211,7 @@ pub struct UrbBulk {
     buffer: Vec<u8>,
     devadr: u8,
     epadr: Endpoint,
-    flags: u16,
+    send_zero_packet: bool
 }
 
 pub enum Urb {
@@ -340,13 +351,17 @@ bitflags::bitflags! {
         const OVERCURRENT = 0x0008;
         const RESET = 0x0010;
     }
+
+    pub struct PortFlag: u8 {
+        const RESUMING = 0x01;
+    }
 }
 
 pub struct PortStat {
-    status: PortStatus,
-    change: PortChange,
-    index: Port,
-    flags: u8,
+    pub status: PortStatus,
+    pub change: PortChange,
+    pub index: Port,
+    pub flags: PortFlag,
 }
 
 pub enum DataRate {
@@ -643,7 +658,7 @@ impl From<ioctl::IocPortStat> for PortStat {
             status: PortStatus::from_bits(port_stat.status).unwrap(),
             change: PortChange::from_bits(port_stat.change).unwrap(),
             index: Port::new(port_stat.index).unwrap(),
-            flags: port_stat.flags,
+            flags: PortFlag::from_bits_retain(port_stat.flags),
         }
     }
 }
@@ -678,6 +693,7 @@ impl TryFrom<ioctl::IocWork> for Work {
                             ioc_urb.packet_count.try_into().unwrap()
                         ]
                         .into_boxed_slice(),
+                        asap: UrbFlags::from_bits_retain(ioc_urb.flags).contains(UrbFlags::ISO_ASAP),
                         interval: ioc_urb.interval,
                     }),
                     ioctl::USB_VHCI_URB_TYPE_INT => Urb::Int(UrbInt {
@@ -696,6 +712,7 @@ impl TryFrom<ioctl::IocWork> for Work {
                         },
                         devadr: ioc_urb.address,
                         epadr: ioc_urb.endpoint.into(),
+                        short_not_ok: UrbFlags::from_bits_retain(ioc_urb.flags).contains(UrbFlags::SHORT_NOT_OK),
                         interval: ioc_urb.interval,
                     }),
                     ioctl::USB_VHCI_URB_TYPE_CONTROL => Urb::Ctrl(UrbControl {
@@ -736,9 +753,7 @@ impl TryFrom<ioctl::IocWork> for Work {
                         },
                         devadr: ioc_urb.address,
                         epadr: ioc_urb.endpoint.into(),
-                        flags: ioc_urb.flags
-                            & (ioctl::USB_VHCI_URB_FLAGS_SHORT_NOT_OK
-                                | ioctl::USB_VHCI_URB_FLAGS_ZERO_PACKET),
+                        send_zero_packet: UrbFlags::from_bits_retain(ioc_urb.flags).contains(UrbFlags::ZERO_PACKET),
                     }),
                     _ => Err(nix::Error::EBADMSG)?,
                 };
