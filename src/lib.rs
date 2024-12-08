@@ -152,6 +152,7 @@ impl Status {
 }
 
 bitflags! {
+    #[derive(Debug, Clone, Copy)]
     pub struct UrbFlags: u16 {
         const SHORT_NOT_OK = 0x0001;
         const ISO_ASAP = 0x0002;
@@ -167,6 +168,7 @@ pub struct IsoPacket {
     status: Status,
 }
 
+#[derive(Debug, Clone)]
 pub struct UrbIso {
     status: Status,
     handle: u64,
@@ -182,6 +184,7 @@ pub struct UrbIso {
     interval: i32,
 }
 
+#[derive(Debug, Clone)]
 pub struct UrbInt {
     status: Status,
     handle: u64,
@@ -192,6 +195,7 @@ pub struct UrbInt {
     interval: i32,
 }
 
+#[derive(Debug, Clone)]
 pub struct UrbControl {
     status: Status,
     handle: u64,
@@ -205,15 +209,17 @@ pub struct UrbControl {
     b_request: u8,
 }
 
+#[derive(Debug, Clone)]
 pub struct UrbBulk {
     status: Status,
     handle: u64,
     buffer: Vec<u8>,
     devadr: u8,
     epadr: Endpoint,
-    send_zero_packet: bool
+    send_zero_packet: bool,
 }
 
+#[derive(Debug, Clone)]
 pub enum Urb {
     Iso(UrbIso),
     Int(UrbInt),
@@ -333,6 +339,7 @@ impl Urb {
 }
 
 bitflags::bitflags! {
+    #[derive(Debug, Clone, Copy)]
     pub struct PortStatus: u16 {
         const CONNECTION = 0x0001;
         const ENABLE = 0x0002;
@@ -344,6 +351,7 @@ bitflags::bitflags! {
         const HIGH_SPEED = 0x0400;
     }
 
+    #[derive(Debug, Clone, Copy)]
     pub struct PortChange: u16 {
         const CONNECTION = 0x0001;
         const ENABLE = 0x0002;
@@ -352,11 +360,13 @@ bitflags::bitflags! {
         const RESET = 0x0010;
     }
 
+    #[derive(Debug, Clone, Copy)]
     pub struct PortFlag: u8 {
         const RESUMING = 0x01;
     }
 }
 
+#[derive(Debug, Clone, Copy)]
 pub struct PortStat {
     pub status: PortStatus,
     pub change: PortChange,
@@ -364,12 +374,14 @@ pub struct PortStat {
     pub flags: PortFlag,
 }
 
+#[derive(Debug, Clone, Copy)]
 pub enum DataRate {
     Full = 0,
     Low = 1,
     High = 2,
 }
 
+#[derive(Debug, Clone)]
 pub enum Work {
     Handle(u64),
     Urb(Urb),
@@ -693,7 +705,8 @@ impl TryFrom<ioctl::IocWork> for Work {
                             ioc_urb.packet_count.try_into().unwrap()
                         ]
                         .into_boxed_slice(),
-                        asap: UrbFlags::from_bits_retain(ioc_urb.flags).contains(UrbFlags::ISO_ASAP),
+                        asap: UrbFlags::from_bits_retain(ioc_urb.flags)
+                            .contains(UrbFlags::ISO_ASAP),
                         interval: ioc_urb.interval,
                     }),
                     ioctl::USB_VHCI_URB_TYPE_INT => Urb::Int(UrbInt {
@@ -712,7 +725,8 @@ impl TryFrom<ioctl::IocWork> for Work {
                         },
                         devadr: ioc_urb.address,
                         epadr: ioc_urb.endpoint.into(),
-                        short_not_ok: UrbFlags::from_bits_retain(ioc_urb.flags).contains(UrbFlags::SHORT_NOT_OK),
+                        short_not_ok: UrbFlags::from_bits_retain(ioc_urb.flags)
+                            .contains(UrbFlags::SHORT_NOT_OK),
                         interval: ioc_urb.interval,
                     }),
                     ioctl::USB_VHCI_URB_TYPE_CONTROL => Urb::Ctrl(UrbControl {
@@ -753,7 +767,8 @@ impl TryFrom<ioctl::IocWork> for Work {
                         },
                         devadr: ioc_urb.address,
                         epadr: ioc_urb.endpoint.into(),
-                        send_zero_packet: UrbFlags::from_bits_retain(ioc_urb.flags).contains(UrbFlags::ZERO_PACKET),
+                        send_zero_packet: UrbFlags::from_bits_retain(ioc_urb.flags)
+                            .contains(UrbFlags::ZERO_PACKET),
                     }),
                     _ => Err(nix::Error::EBADMSG)?,
                 };
