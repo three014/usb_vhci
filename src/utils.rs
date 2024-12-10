@@ -1,6 +1,7 @@
+#[derive(Debug, Clone, Copy)]
 pub enum TimeoutMillis {
     Unlimited,
-    Time(ClosedBoundedI16<1, 1000>),
+    Time(ClosedBoundedI16<0, 1000>),
 }
 
 #[repr(transparent)]

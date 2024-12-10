@@ -157,6 +157,17 @@ bitflags! {
         const SHORT_NOT_OK = 0x0001;
         const ISO_ASAP = 0x0002;
         const ZERO_PACKET = 0x0040;
+
+        const _ = !0;
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct UrbHandle(u64);
+
+impl UrbHandle {
+    pub(crate) fn as_raw_handle(&self) -> u64 {
+        self.0
     }
 }
 
@@ -171,7 +182,7 @@ pub struct IsoPacket {
 #[derive(Debug, Clone)]
 pub struct UrbIso {
     status: Status,
-    handle: u64,
+    handle: UrbHandle,
     /// buffer length is the actual length for iso urbs
     buffer: Box<[u8]>,
     iso_packets: Box<[IsoPacket]>,
@@ -187,7 +198,7 @@ pub struct UrbIso {
 #[derive(Debug, Clone)]
 pub struct UrbInt {
     status: Status,
-    handle: u64,
+    handle: UrbHandle,
     buffer: Vec<u8>,
     devadr: u8,
     epadr: Endpoint,
@@ -198,7 +209,7 @@ pub struct UrbInt {
 #[derive(Debug, Clone)]
 pub struct UrbControl {
     status: Status,
-    handle: u64,
+    handle: UrbHandle,
     buffer: Vec<u8>,
     devadr: u8,
     epadr: Endpoint,
@@ -212,14 +223,14 @@ pub struct UrbControl {
 #[derive(Debug, Clone)]
 pub struct UrbBulk {
     status: Status,
-    handle: u64,
+    handle: UrbHandle,
     buffer: Vec<u8>,
     devadr: u8,
     epadr: Endpoint,
     send_zero_packet: bool,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub enum Urb {
     Iso(UrbIso),
     Int(UrbInt),
@@ -237,7 +248,7 @@ impl Urb {
         }
     }
 
-    pub const fn handle(&self) -> u64 {
+    pub const fn handle(&self) -> UrbHandle {
         match self {
             Urb::Iso(urb_iso) => urb_iso.handle,
             Urb::Int(urb_int) => urb_int.handle,
@@ -349,6 +360,8 @@ bitflags::bitflags! {
         const POWER = 0x0100;
         const LOW_SPEED = 0x0200;
         const HIGH_SPEED = 0x0400;
+
+        const _ = !0;
     }
 
     #[derive(Debug, Clone, Copy)]
@@ -358,11 +371,15 @@ bitflags::bitflags! {
         const SUSPEND = 0x0004;
         const OVERCURRENT = 0x0008;
         const RESET = 0x0010;
+
+        const _ = !0;
     }
 
     #[derive(Debug, Clone, Copy)]
     pub struct PortFlag: u8 {
         const RESUMING = 0x01;
+
+        const _ = !0;
     }
 }
 
@@ -381,10 +398,10 @@ pub enum DataRate {
     High = 2,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub enum Work {
-    Handle(u64),
-    Urb(Urb),
+    CancelUrb(UrbHandle),
+    ProcessUrb(Urb),
     PortStat(PortStat),
 }
 
@@ -462,7 +479,7 @@ impl Vhci {
 
     pub fn fetch_data(&self, urb: &mut Urb) -> std::io::Result<()> {
         let mut ioc_urb_data = ioctl::IocUrbData {
-            handle: urb.handle(),
+            handle: urb.handle().as_raw_handle(),
             buffer_length: urb.buffer_length() as i32,
             packet_count: urb.packet_count() as i32,
             buffer: urb.buffer_mut().as_mut_ptr().cast(),
@@ -498,30 +515,29 @@ impl Vhci {
         Ok(())
     }
 
-    pub fn giveback(&self, urb: &mut Urb) -> std::io::Result<()> {
+    pub fn giveback(&self, urb: Urb) -> std::io::Result<()> {
         let mut ioc_giveback = ioctl::IocGiveback {
-            handle: urb.handle(),
+            handle: urb.handle().as_raw_handle(),
             status: urb.status_to_errno_raw(),
             buffer_actual: urb.buffer_actual() as i32,
             ..Default::default()
         };
 
-        let mut ioc_iso_packet_givebacks: Vec<ioctl::IocIsoPacketGiveback> =
-            Vec::with_capacity(urb.packet_count());
+        let mut ioc_iso_packets = heapless::Vec::<ioctl::IocIsoPacketGiveback, 128>::new();
 
         if urb.epadr().is_in() && ioc_giveback.buffer_actual > 0 {
-            ioc_giveback.buffer = urb.buffer_mut().as_mut_ptr().cast();
+            ioc_giveback.buffer = urb.buffer().as_ptr().cast_mut().cast();
         }
         if let Urb::Iso(ref urb_iso) = urb {
-            for (iso_packet, ioc_iso_packet_giveback) in urb_iso
-                .iso_packets
-                .iter()
-                .zip(ioc_iso_packet_givebacks.iter_mut())
-            {
-                ioc_iso_packet_giveback.status = iso_packet.status.to_errno_raw(true);
-                ioc_iso_packet_giveback.packet_actual = iso_packet.packet_actual as u32;
+            for iso_packet in urb_iso.iso_packets.iter() {
+                ioc_iso_packets
+                    .push(ioctl::IocIsoPacketGiveback {
+                        packet_actual: iso_packet.packet_actual as u32,
+                        status: iso_packet.status.to_errno_raw(true),
+                    })
+                    .expect("URB should not have more than 128 ISO packets");
             }
-            ioc_giveback.iso_packets = ioc_iso_packet_givebacks.as_mut_ptr();
+            ioc_giveback.iso_packets = ioc_iso_packets.as_mut_ptr();
             ioc_giveback.packet_count = urb.packet_count() as i32;
             ioc_giveback.error_count = urb.error_count();
         }
@@ -694,7 +710,7 @@ impl TryFrom<ioctl::IocWork> for Work {
                 let urb = match ioc_urb.typ {
                     ioctl::USB_VHCI_URB_TYPE_ISO => Urb::Iso(UrbIso {
                         status: Status::Pending,
-                        handle: ioc_work.handle,
+                        handle: UrbHandle(ioc_work.handle),
                         buffer: vec![0; ioc_urb.buffer_length.try_into().unwrap()]
                             .into_boxed_slice(),
                         error_count: 0,
@@ -711,7 +727,7 @@ impl TryFrom<ioctl::IocWork> for Work {
                     }),
                     ioctl::USB_VHCI_URB_TYPE_INT => Urb::Int(UrbInt {
                         status: Status::Pending,
-                        handle: ioc_work.handle,
+                        handle: UrbHandle(ioc_work.handle),
                         buffer: {
                             let mut buf = Vec::new();
                             buf.reserve_exact(ioc_urb.buffer_length.try_into().unwrap());
@@ -731,7 +747,7 @@ impl TryFrom<ioctl::IocWork> for Work {
                     }),
                     ioctl::USB_VHCI_URB_TYPE_CONTROL => Urb::Ctrl(UrbControl {
                         status: Status::Pending,
-                        handle: ioc_work.handle,
+                        handle: UrbHandle(ioc_work.handle),
                         buffer: {
                             let mut buf = Vec::new();
                             buf.reserve_exact(ioc_urb.buffer_length.try_into().unwrap());
@@ -753,7 +769,7 @@ impl TryFrom<ioctl::IocWork> for Work {
                     }),
                     ioctl::USB_VHCI_URB_TYPE_BULK => Urb::Bulk(UrbBulk {
                         status: Status::Pending,
-                        handle: ioc_work.handle,
+                        handle: UrbHandle(ioc_work.handle),
                         buffer: {
                             let mut buf = Vec::new();
                             buf.reserve_exact(ioc_urb.buffer_length.try_into().unwrap());
@@ -773,9 +789,9 @@ impl TryFrom<ioctl::IocWork> for Work {
                     _ => Err(nix::Error::EBADMSG)?,
                 };
 
-                Ok(Work::Urb(urb))
+                Ok(Work::ProcessUrb(urb))
             }
-            ioctl::USB_VHCI_WORK_TYPE_CANCEL_URB => Ok(Work::Handle(ioc_work.handle)),
+            ioctl::USB_VHCI_WORK_TYPE_CANCEL_URB => Ok(Work::CancelUrb(UrbHandle(ioc_work.handle))),
             _ => Err(nix::Error::EBADMSG),
         }
     }
@@ -813,6 +829,18 @@ mod ioctl {
     pub const USB_VHCI_WORK_TYPE_PROCESS_URB: u8 = 1;
     pub const USB_VHCI_WORK_TYPE_CANCEL_URB: u8 = 2;
 
+    pub const URB_RQ_GET_STATUS: u8 = 0;
+    pub const URB_RQ_CLEAR_FEATURE: u8 = 1;
+    pub const URB_RQ_SET_FEATURE: u8 = 3;
+    pub const URB_RQ_SET_ADDRESS: u8 = 5;
+    pub const URB_RQ_GET_DESCRIPTOR: u8 = 6;
+    pub const URB_RQ_SET_DESCRIPTOR: u8 = 7;
+    pub const URB_RQ_GET_CONFIGURATION: u8 = 8;
+    pub const URB_RQ_SET_CONFIGURATION: u8 = 9;
+    pub const URB_RQ_GET_INTERFACE: u8 = 10;
+    pub const URB_RQ_SET_INTERFACE: u8 = 11;
+    pub const URB_RQ_SYNCH_FRAME: u8 = 12;
+    
     #[derive(Clone, Copy, Default)]
     #[repr(C)]
     pub struct IocRegister {
@@ -937,7 +965,7 @@ mod ioctl {
         IocUrbData
     );
 
-    #[derive(Clone, Copy, Default)]
+    #[derive(Debug, Clone, Copy, Default)]
     #[repr(C)]
     pub struct IocIsoPacketGiveback {
         pub packet_actual: u32,
@@ -980,9 +1008,11 @@ mod ioctl {
 
 #[cfg(test)]
 mod tests {
+    use utils::{ClosedBoundedI16, OpenBoundedU8, TimeoutMillis};
+
     use super::*;
 
-    const NUM_PORTS: utils::OpenBoundedU8<0, 32> = utils::OpenBoundedU8::new(3).unwrap();
+    const NUM_PORTS: OpenBoundedU8<0, 32> = OpenBoundedU8::new(1).unwrap();
 
     #[test]
     fn can_create_vhci() {
@@ -993,7 +1023,48 @@ mod tests {
     fn can_connect_disconnect_port() {
         let mut vhci = Vhci::open(NUM_PORTS).unwrap();
         let port = vhci.port_connect_any(DataRate::High).unwrap();
-        dbg!(&vhci);
         vhci.port_disconnect(port).unwrap();
+    }
+
+    #[test]
+    fn can_fetch_work() {
+        let num_ports = OpenBoundedU8::new(1).unwrap();
+        let mut vhci = Vhci::open(num_ports).unwrap();
+        let mut prev = PortStat {
+            status: PortStatus::empty(),
+            change: PortChange::empty(),
+            index: Port::new(1).unwrap(),
+            flags: PortFlag::empty(),
+        };
+        let _urb = loop {
+            let timeout = TimeoutMillis::Time(ClosedBoundedI16::new(1000).unwrap());
+            let work = vhci.fetch_work_timeout(timeout).unwrap();
+            eprintln!("{work:?}");
+            match work {
+                Work::CancelUrb(_) => unreachable!(),
+                Work::ProcessUrb(urb) => break urb,
+                Work::PortStat(next) => {
+                    if (!prev.status).contains(PortStatus::POWER)
+                        && next.status.contains(PortStatus::POWER)
+                    {
+                        vhci.port_connect(next.index, DataRate::Full).unwrap();
+                    } else if (!prev.status).contains(PortStatus::RESET)
+                        && next
+                            .status
+                            .contains(PortStatus::RESET | PortStatus::CONNECTION)
+                    {
+                        vhci.port_reset_done(next.index, true).unwrap();
+                    } else if (!prev.flags).contains(PortFlag::RESUMING)
+                        && next.flags.contains(PortFlag::RESUMING)
+                        && next.status.contains(PortStatus::CONNECTION)
+                    {
+                        vhci.port_resumed(next.index).unwrap();
+                    }
+                    prev = next;
+                }
+            }
+        };
+
+        vhci.port_disconnect(Port::new(1).unwrap()).unwrap();
     }
 }
