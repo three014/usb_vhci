@@ -4,6 +4,9 @@ GOAL: Develop a Rust crate that can interface with `usb-vhci-hcd`
 and `usb-vhci-iocifc`, kernel modules that allow userspace to
 define and use fake USB devices.
 
+**This project is a Rust port of the [`libusb_vhci`](https://sourceforge.net/projects/usb-vhci/files/native%20libraries/) 
+userspace library. All credit goes to Bruse Geng, Emil Lee, and m_singer.**
+
 ---
 
 Last time I messed around with the USB/IP project, I 
@@ -31,5 +34,5 @@ I'm currently writing a new program that's essentially the
 USB/IP project but with the QUIC transport protocol instead
 of TCP. I believe the USB/IP project could benefit from 1. QUIC's
 control flow methods and 2. Moving a lot of its code into userspace,
-[something that was mentioned](https://github.com/torvalds/linux/blob/master/drivers/usb/usbip/vhci_hcd.c#L24C1-L24C43) 
+something that was [mentioned](https://github.com/torvalds/linux/blob/master/drivers/usb/usbip/vhci_hcd.c#L24C1-L24C43) 
 in the kernel module for USB/IP.
