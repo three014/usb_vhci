@@ -51,6 +51,8 @@ pub enum Dir {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Port(utils::OpenBoundedU8<0, 32>);
 
+impl nohash_hasher::IsEnabled for Port {}
+
 impl Port {
     pub const fn new(port: u8) -> Option<Self> {
         if let Some(num) = utils::OpenBoundedU8::new(port) {
@@ -164,6 +166,9 @@ bitflags! {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct UrbHandle(u64);
+
+impl nohash_hasher::IsEnabled for UrbHandle {}
+
 
 impl UrbHandle {
     pub(crate) fn as_raw_handle(&self) -> u64 {

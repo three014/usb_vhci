@@ -8,6 +8,9 @@ pub enum TimeoutMillis {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct OpenBoundedU8<const LOWER: u8, const UPPER: u8>(u8);
 
+impl<const LOWER: u8, const UPPER: u8> nohash_hasher::IsEnabled for OpenBoundedU8<LOWER, UPPER> {}
+
+
 impl<const LOWER: u8, const UPPER: u8> OpenBoundedU8<LOWER, UPPER> {
     pub const fn new(num: u8) -> Option<Self> {
         if LOWER >= num || UPPER <= num {
@@ -25,6 +28,8 @@ impl<const LOWER: u8, const UPPER: u8> OpenBoundedU8<LOWER, UPPER> {
 #[repr(transparent)]
 #[derive(Debug, Clone, Copy,PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ClosedBoundedI16<const LOWER: i16, const UPPER: i16>(i16);
+
+impl<const LOWER: i16, const UPPER: i16> nohash_hasher::IsEnabled for ClosedBoundedI16<LOWER, UPPER> {}
 
 impl<const LOWER: i16, const UPPER: i16> ClosedBoundedI16<LOWER, UPPER> {
     pub const fn new(num: i16) -> Option<Self> {
