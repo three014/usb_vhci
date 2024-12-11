@@ -48,7 +48,7 @@ pub enum Dir {
     Out = 1,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Port(utils::OpenBoundedU8<0, 32>);
 
 impl Port {
@@ -67,7 +67,7 @@ impl Port {
 
 #[derive(Debug, num_enum::TryFromPrimitive, Default, Clone, Copy)]
 #[repr(i32)]
-pub enum Status {
+pub enum IsoStatus {
     #[default]
     Success = 0x00000000,
     Pending = 0x10000001,
@@ -87,32 +87,32 @@ pub enum Status {
     AllIsoPacketsFailed = 0x78000001,
 }
 
-impl Status {
+impl IsoStatus {
     pub const fn to_errno_raw(&self, is_iso: bool) -> i32 {
         use nix::libc::*;
         match self {
-            Status::Success => 0,
-            Status::Pending => -EINPROGRESS,
-            Status::ShortPacket => -EREMOTEIO,
-            Status::Error => {
+            IsoStatus::Success => 0,
+            IsoStatus::Pending => -EINPROGRESS,
+            IsoStatus::ShortPacket => -EREMOTEIO,
+            IsoStatus::Error => {
                 if is_iso {
                     -EXDEV
                 } else {
                     -EPROTO
                 }
             }
-            Status::Canceled => -ECONNRESET,
-            Status::TimedOut => -ETIMEDOUT,
-            Status::DeviceDisabled => -ESHUTDOWN,
-            Status::DeviceDisconnected => -ENODEV,
-            Status::BitStuff => -EPROTO,
-            Status::Crc => -EILSEQ,
-            Status::NoResponse => -ETIME,
-            Status::Babble => -EOVERFLOW,
-            Status::Stall => -EPIPE,
-            Status::BufferOverrun => -ECOMM,
-            Status::BufferUnderrun => -ENOSR,
-            Status::AllIsoPacketsFailed => {
+            IsoStatus::Canceled => -ECONNRESET,
+            IsoStatus::TimedOut => -ETIMEDOUT,
+            IsoStatus::DeviceDisabled => -ESHUTDOWN,
+            IsoStatus::DeviceDisconnected => -ENODEV,
+            IsoStatus::BitStuff => -EPROTO,
+            IsoStatus::Crc => -EILSEQ,
+            IsoStatus::NoResponse => -ETIME,
+            IsoStatus::Babble => -EOVERFLOW,
+            IsoStatus::Stall => -EPIPE,
+            IsoStatus::BufferOverrun => -ECOMM,
+            IsoStatus::BufferUnderrun => -ENOSR,
+            IsoStatus::AllIsoPacketsFailed => {
                 if is_iso {
                     -EINVAL
                 } else {
@@ -125,28 +125,28 @@ impl Status {
     pub const fn from_errno_raw(errno: i32, is_iso: bool) -> Self {
         use nix::libc::*;
         match -errno {
-            0 => Status::Success,
-            EINPROGRESS => Status::Pending,
-            EREMOTEIO => Status::ShortPacket,
-            ENOENT | ECONNRESET => Status::Canceled,
-            ETIMEDOUT => Status::TimedOut,
-            ESHUTDOWN => Status::DeviceDisabled,
-            ENODEV => Status::DeviceDisconnected,
-            EPROTO => Status::BitStuff,
-            EILSEQ => Status::Crc,
-            ETIME => Status::NoResponse,
-            EOVERFLOW => Status::Babble,
-            EPIPE => Status::Stall,
-            ECOMM => Status::BufferOverrun,
-            ENOSR => Status::BufferUnderrun,
+            0 => IsoStatus::Success,
+            EINPROGRESS => IsoStatus::Pending,
+            EREMOTEIO => IsoStatus::ShortPacket,
+            ENOENT | ECONNRESET => IsoStatus::Canceled,
+            ETIMEDOUT => IsoStatus::TimedOut,
+            ESHUTDOWN => IsoStatus::DeviceDisabled,
+            ENODEV => IsoStatus::DeviceDisconnected,
+            EPROTO => IsoStatus::BitStuff,
+            EILSEQ => IsoStatus::Crc,
+            ETIME => IsoStatus::NoResponse,
+            EOVERFLOW => IsoStatus::Babble,
+            EPIPE => IsoStatus::Stall,
+            ECOMM => IsoStatus::BufferOverrun,
+            ENOSR => IsoStatus::BufferUnderrun,
             EINVAL => {
                 if is_iso {
-                    Status::AllIsoPacketsFailed
+                    IsoStatus::AllIsoPacketsFailed
                 } else {
-                    Status::Error
+                    IsoStatus::Error
                 }
             }
-            _ => Status::Error,
+            _ => IsoStatus::Error,
         }
     }
 }
@@ -162,7 +162,7 @@ bitflags! {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct UrbHandle(u64);
 
 impl UrbHandle {
@@ -176,12 +176,12 @@ pub struct IsoPacket {
     offset: u32,
     packet_length: i32,
     packet_actual: i32,
-    status: Status,
+    status: IsoStatus,
 }
 
 #[derive(Debug, Clone)]
 pub struct UrbIso {
-    status: Status,
+    status: IsoStatus,
     handle: UrbHandle,
     /// buffer length is the actual length for iso urbs
     buffer: Box<[u8]>,
@@ -197,7 +197,7 @@ pub struct UrbIso {
 
 #[derive(Debug, Clone)]
 pub struct UrbInt {
-    status: Status,
+    status: IsoStatus,
     handle: UrbHandle,
     buffer: Vec<u8>,
     devadr: u8,
@@ -208,7 +208,7 @@ pub struct UrbInt {
 
 #[derive(Debug, Clone)]
 pub struct UrbControl {
-    status: Status,
+    status: IsoStatus,
     handle: UrbHandle,
     buffer: Vec<u8>,
     devadr: u8,
@@ -222,7 +222,7 @@ pub struct UrbControl {
 
 #[derive(Debug, Clone)]
 pub struct UrbBulk {
-    status: Status,
+    status: IsoStatus,
     handle: UrbHandle,
     buffer: Vec<u8>,
     devadr: u8,
@@ -508,7 +508,7 @@ impl Vhci {
                 iso_packet.offset = ioc_iso_packet.offset;
                 iso_packet.packet_length = ioc_iso_packet.packet_length as i32;
                 iso_packet.packet_actual = 0;
-                iso_packet.status = Status::Pending;
+                iso_packet.status = IsoStatus::Pending;
             }
         }
 
@@ -709,7 +709,7 @@ impl TryFrom<ioctl::IocWork> for Work {
                 let ioc_urb = unsafe { ioc_work.work.urb };
                 let urb = match ioc_urb.typ {
                     ioctl::USB_VHCI_URB_TYPE_ISO => Urb::Iso(UrbIso {
-                        status: Status::Pending,
+                        status: IsoStatus::Pending,
                         handle: UrbHandle(ioc_work.handle),
                         buffer: vec![0; ioc_urb.buffer_length.try_into().unwrap()]
                             .into_boxed_slice(),
@@ -726,7 +726,7 @@ impl TryFrom<ioctl::IocWork> for Work {
                         interval: ioc_urb.interval,
                     }),
                     ioctl::USB_VHCI_URB_TYPE_INT => Urb::Int(UrbInt {
-                        status: Status::Pending,
+                        status: IsoStatus::Pending,
                         handle: UrbHandle(ioc_work.handle),
                         buffer: {
                             let mut buf = Vec::new();
@@ -746,7 +746,7 @@ impl TryFrom<ioctl::IocWork> for Work {
                         interval: ioc_urb.interval,
                     }),
                     ioctl::USB_VHCI_URB_TYPE_CONTROL => Urb::Ctrl(UrbControl {
-                        status: Status::Pending,
+                        status: IsoStatus::Pending,
                         handle: UrbHandle(ioc_work.handle),
                         buffer: {
                             let mut buf = Vec::new();
@@ -768,7 +768,7 @@ impl TryFrom<ioctl::IocWork> for Work {
                         b_request: ioc_urb.setup_packet.b_request,
                     }),
                     ioctl::USB_VHCI_URB_TYPE_BULK => Urb::Bulk(UrbBulk {
-                        status: Status::Pending,
+                        status: IsoStatus::Pending,
                         handle: UrbHandle(ioc_work.handle),
                         buffer: {
                             let mut buf = Vec::new();
@@ -840,7 +840,7 @@ mod ioctl {
     pub const URB_RQ_GET_INTERFACE: u8 = 10;
     pub const URB_RQ_SET_INTERFACE: u8 = 11;
     pub const URB_RQ_SYNCH_FRAME: u8 = 12;
-    
+
     #[derive(Clone, Copy, Default)]
     #[repr(C)]
     pub struct IocRegister {
