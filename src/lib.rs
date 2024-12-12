@@ -218,11 +218,11 @@ pub struct UrbControl {
     buffer: Vec<u8>,
     devadr: u8,
     epadr: Endpoint,
-    w_value: u16,
-    w_index: u16,
-    w_length: u16,
-    bm_request_type: u8,
-    b_request: u8,
+    pub w_value: u16,
+    pub w_index: u16,
+    pub w_length: u16,
+    pub bm_request_type: u8,
+    pub b_request: u8,
 }
 
 #[derive(Debug, Clone)]
