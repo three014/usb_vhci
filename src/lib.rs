@@ -405,8 +405,15 @@ pub enum DataRate {
 
 #[derive(Debug)]
 pub enum Work {
+    /// URB was cancelled and
+    /// given back to its creator.
     CancelUrb(UrbHandle),
+
+    /// Creator of URB wants data.
+    /// When finished, giveback modified/new URB.
     ProcessUrb(Urb),
+
+    /// Information about a port.
     PortStat(PortStat),
 }
 
@@ -464,7 +471,7 @@ impl Vhci {
     pub fn fetch_work_timeout(&self, timeout: utils::TimeoutMillis) -> std::io::Result<Work> {
         let mut ioc_work = ioctl::IocWork {
             timeout: match timeout {
-                utils::TimeoutMillis::Unlimited => ioctl::USB_VHCI_TIMEOUT_INFINITE,
+                // utils::TimeoutMillis::Unlimited => ioctl::USB_VHCI_TIMEOUT_INFINITE,
                 utils::TimeoutMillis::Time(time) => time.get(),
             },
             ..Default::default()
@@ -596,7 +603,7 @@ impl Vhci {
         Ok(())
     }
 
-    pub fn port_disconnect(&self, port: Port) -> std::io::Result<()> {
+    pub fn port_disconnect(&mut self, port: Port) -> std::io::Result<()> {
         let mut ioc_port_stat = ioctl::IocPortStat {
             change: PortChange::CONNECTION.bits(),
             index: port.get(),
@@ -609,6 +616,8 @@ impl Vhci {
             ioctl::usb_vhci_portstat(self.dev.as_raw_fd(), &raw mut ioc_port_stat)
                 .map_err(std::io::Error::from)?
         };
+
+        self.open_ports.set(port.get().sub(1) as usize, false);
         Ok(())
     }
 

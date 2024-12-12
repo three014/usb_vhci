@@ -1,6 +1,6 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TimeoutMillis {
-    Unlimited,
+    // Unlimited, TODO: Find out why this times out immediately?
     Time(ClosedBoundedI16<0, 1000>),
 }
 
