@@ -462,6 +462,14 @@ impl Vhci {
         })
     }
 
+    pub fn free_ports(&self) -> u64 {
+        self.open_ports.count_zeros()
+    }
+
+    pub fn is_active(&self) -> bool {
+        !self.open_ports.none()
+    }
+
     pub fn fetch_work(&self) -> std::io::Result<Work> {
         self.fetch_work_timeout(utils::TimeoutMillis::Time(
             utils::ClosedBoundedI16::new(100).unwrap(),
