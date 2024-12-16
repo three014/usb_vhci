@@ -8,6 +8,9 @@ use std::{
 pub mod utils;
 pub use nix::libc;
 
+pub const MAX_ISO_PACKETS: usize = 64;
+static USB_VHCI_DEVICE_FILE: &str = "/dev/usb-vhci";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Endpoint(u8);
 
@@ -49,13 +52,13 @@ pub enum Dir {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct Port(utils::OpenBoundedU8<0, 32>);
+pub struct Port(utils::BoundedU8<1, 32>);
 
 impl nohash_hasher::IsEnabled for Port {}
 
 impl Port {
     pub const fn new(port: u8) -> Option<Self> {
-        if let Some(num) = utils::OpenBoundedU8::new(port) {
+        if let Some(num) = utils::BoundedU8::new(port) {
             Some(Self(num))
         } else {
             None
@@ -168,7 +171,6 @@ bitflags! {
 pub struct UrbHandle(u64);
 
 impl nohash_hasher::IsEnabled for UrbHandle {}
-
 
 impl UrbHandle {
     pub(crate) fn as_raw_handle(&self) -> u64 {
@@ -418,7 +420,163 @@ pub enum Work {
 }
 
 #[derive(Debug)]
-pub struct Vhci {
+pub struct Remote {
+    dev: std::os::unix::io::RawFd,
+}
+
+impl Remote {
+    pub fn fetch_data(&self, urb: &mut Urb) -> std::io::Result<()> {
+        let mut ioc_urb_data = ioctl::IocUrbData {
+            handle: urb.handle().as_raw_handle(),
+            buffer_length: urb.buffer_length() as i32,
+            packet_count: urb.packet_count() as i32,
+            buffer: urb.buffer_mut().as_mut_ptr().cast(),
+            ..Default::default()
+        };
+        let mut ioc_iso_packets = heapless::Vec::<ioctl::IocIsoPacketData, MAX_ISO_PACKETS>::new();
+        assert!(urb.packet_count() <= MAX_ISO_PACKETS);
+        if urb.packet_count() > 0 {
+            ioc_urb_data.iso_packets = ioc_iso_packets.as_mut_ptr();
+        }
+
+        // SAFETY: TODO: We allocate our own buffer for the iso packets,
+        //         and that shouuuuuld last throughout this call?
+        //         After the ioctl call, `iso_packets` should have the
+        //         same len as the buffer in the urb??
+        unsafe {
+            ioctl::usb_vhci_fetchdata(self.dev, &raw mut ioc_urb_data)
+                .map_err(std::io::Error::from)?;
+            // Can't forget about the aliasing rule
+            ioc_urb_data.iso_packets = std::ptr::null_mut();
+            ioc_iso_packets.set_len(urb.packet_count());
+        };
+
+        if let Urb::Iso(urb_iso) = urb {
+            for (iso_packet, ioc_iso_packet) in urb_iso.iso_packets.iter_mut().zip(ioc_iso_packets)
+            {
+                iso_packet.offset = ioc_iso_packet.offset;
+                iso_packet.packet_length = ioc_iso_packet.packet_length as i32;
+                iso_packet.packet_actual = 0;
+                iso_packet.status = IsoStatus::Pending;
+            }
+        }
+
+        Ok(())
+    }
+
+    pub fn giveback(&self, urb: Urb) -> std::io::Result<()> {
+        let mut ioc_giveback = ioctl::IocGiveback {
+            handle: urb.handle().as_raw_handle(),
+            status: urb.status_to_errno_raw(),
+            buffer_actual: urb.buffer_actual() as i32,
+            ..Default::default()
+        };
+
+        let mut ioc_iso_packets =
+            heapless::Vec::<ioctl::IocIsoPacketGiveback, MAX_ISO_PACKETS>::new();
+        assert!(urb.packet_count() <= MAX_ISO_PACKETS);
+        if urb.epadr().is_in() && ioc_giveback.buffer_actual > 0 {
+            ioc_giveback.buffer = urb.buffer().as_ptr().cast_mut().cast();
+        }
+        if let Urb::Iso(ref urb_iso) = urb {
+            for iso_packet in urb_iso.iso_packets.iter() {
+                ioc_iso_packets
+                    .push(ioctl::IocIsoPacketGiveback {
+                        packet_actual: iso_packet.packet_actual as u32,
+                        status: iso_packet.status.to_errno_raw(true),
+                    })
+                    .expect("URB should not have more than 64 ISO packets");
+            }
+            ioc_giveback.iso_packets = ioc_iso_packets.as_mut_ptr();
+            ioc_giveback.packet_count = urb.packet_count() as i32;
+            ioc_giveback.error_count = urb.error_count();
+        }
+
+        // SAFETY: TODO: We allocate our own buffer for the iso packets,
+        //         and that shouuuuuld last throughout this call?
+        unsafe {
+            match ioctl::usb_vhci_giveback(self.dev, &raw mut ioc_giveback) {
+                Err(nix::Error::ECANCELED) | Ok(_) => Ok(()),
+                Err(nix) => Err(std::io::Error::from(nix)),
+            }
+        }
+    }
+
+    pub fn port_disable(&self, port: Port) -> std::io::Result<()> {
+        let mut ioc_port_stat = ioctl::IocPortStat {
+            change: PortChange::ENABLE.bits(),
+            index: port.get(),
+            ..Default::default()
+        };
+
+        // SAFETY: Both the file descriptor and raw mut pointer
+        //         are valid for the duration of this ioctl call.
+        unsafe {
+            ioctl::usb_vhci_portstat(self.dev, &raw mut ioc_port_stat)
+                .map_err(std::io::Error::from)?
+        };
+        Ok(())
+    }
+
+    pub fn port_resumed(&self, port: Port) -> std::io::Result<()> {
+        let mut ioc_port_stat = ioctl::IocPortStat {
+            change: PortChange::SUSPEND.bits(),
+            index: port.get(),
+            ..Default::default()
+        };
+
+        // SAFETY: Both the file descriptor and raw mut pointer
+        //         are valid for the duration of this ioctl call.
+        unsafe {
+            ioctl::usb_vhci_portstat(self.dev, &raw mut ioc_port_stat)
+                .map_err(std::io::Error::from)?
+        };
+        Ok(())
+    }
+
+    pub fn port_overcurrent(&self, port: Port, set: bool) -> std::io::Result<()> {
+        let mut ioc_port_stat = ioctl::IocPortStat {
+            change: PortChange::OVERCURRENT.bits(),
+            index: port.get(),
+            ..Default::default()
+        };
+        if set {
+            ioc_port_stat.status = PortStatus::OVERCURRENT.bits();
+        }
+
+        // SAFETY: Both the file descriptor and raw mut pointer
+        //         are valid for the duration of this ioctl call.
+        unsafe {
+            ioctl::usb_vhci_portstat(self.dev, &raw mut ioc_port_stat)
+                .map_err(std::io::Error::from)?
+        };
+        Ok(())
+    }
+
+    pub fn port_reset_done(&self, port: Port, enable: bool) -> std::io::Result<()> {
+        let mut ioc_port_stat = ioctl::IocPortStat {
+            index: port.get(),
+            change: PortChange::RESET.bits(),
+            ..Default::default()
+        };
+        if enable {
+            ioc_port_stat.status = PortStatus::ENABLE.bits();
+        } else {
+            ioc_port_stat.change |= PortChange::ENABLE.bits();
+        }
+
+        // SAFETY: Both the file descriptor and raw mut pointer
+        //         are valid for the duration of this ioctl call.
+        unsafe {
+            ioctl::usb_vhci_portstat(self.dev, &raw mut ioc_port_stat)
+                .map_err(std::io::Error::from)?
+        };
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
+pub struct Controller {
     dev: std::fs::File,
     open_ports: BitVec,
     controller_id: i32,
@@ -426,10 +584,8 @@ pub struct Vhci {
     bus_id: Box<str>,
 }
 
-static USB_VHCI_DEVICE_FILE: &str = "/dev/usb-vhci";
-
-impl Vhci {
-    pub fn open(num_ports: utils::OpenBoundedU8<0, 32>) -> std::io::Result<Self> {
+impl Controller {
+    pub fn open(num_ports: utils::BoundedU8<1, 32>) -> std::io::Result<Self> {
         let device = std::fs::OpenOptions::new()
             .read(true)
             .write(true)
@@ -470,9 +626,20 @@ impl Vhci {
         !self.open_ports.none()
     }
 
+    /// Clones the underlying file descriptor into
+    /// an object with less capabilities than the
+    /// main controller.
+    ///
+    /// 
+    pub fn remote(&self) -> Remote {
+        Remote {
+            dev: self.dev.as_raw_fd(),
+        }
+    }
+
     pub fn fetch_work(&self) -> std::io::Result<Work> {
         self.fetch_work_timeout(utils::TimeoutMillis::Time(
-            utils::ClosedBoundedI16::new(100).unwrap(),
+            utils::BoundedI16::new(100).unwrap(),
         ))
     }
 
@@ -498,78 +665,17 @@ impl Vhci {
     }
 
     pub fn fetch_data(&self, urb: &mut Urb) -> std::io::Result<()> {
-        let mut ioc_urb_data = ioctl::IocUrbData {
-            handle: urb.handle().as_raw_handle(),
-            buffer_length: urb.buffer_length() as i32,
-            packet_count: urb.packet_count() as i32,
-            buffer: urb.buffer_mut().as_mut_ptr().cast(),
-            ..Default::default()
-        };
-        let mut ioc_iso_packets = Vec::with_capacity(urb.packet_count());
-        if urb.packet_count() > 0 {
-            ioc_urb_data.iso_packets = ioc_iso_packets.as_mut_ptr();
+        Remote {
+            dev: self.dev.as_raw_fd(),
         }
-
-        // SAFETY: TODO: We allocate our own buffer for the iso packets,
-        //         and that shouuuuuld last throughout this call?
-        //         After the ioctl call, `iso_packets` should have the
-        //         same len as the buffer in the urb??
-        unsafe {
-            ioctl::usb_vhci_fetchdata(self.dev.as_raw_fd(), &raw mut ioc_urb_data)
-                .map_err(std::io::Error::from)?;
-            // Can't forget about the aliasing rule
-            ioc_urb_data.iso_packets = std::ptr::null_mut();
-            ioc_iso_packets.set_len(urb.packet_count());
-        };
-
-        if let Urb::Iso(urb_iso) = urb {
-            for (iso_packet, ioc_iso_packet) in urb_iso.iso_packets.iter_mut().zip(ioc_iso_packets)
-            {
-                iso_packet.offset = ioc_iso_packet.offset;
-                iso_packet.packet_length = ioc_iso_packet.packet_length as i32;
-                iso_packet.packet_actual = 0;
-                iso_packet.status = IsoStatus::Pending;
-            }
-        }
-
-        Ok(())
+        .fetch_data(urb)
     }
 
     pub fn giveback(&self, urb: Urb) -> std::io::Result<()> {
-        let mut ioc_giveback = ioctl::IocGiveback {
-            handle: urb.handle().as_raw_handle(),
-            status: urb.status_to_errno_raw(),
-            buffer_actual: urb.buffer_actual() as i32,
-            ..Default::default()
-        };
-
-        let mut ioc_iso_packets = heapless::Vec::<ioctl::IocIsoPacketGiveback, 128>::new();
-
-        if urb.epadr().is_in() && ioc_giveback.buffer_actual > 0 {
-            ioc_giveback.buffer = urb.buffer().as_ptr().cast_mut().cast();
+        Remote {
+            dev: self.dev.as_raw_fd(),
         }
-        if let Urb::Iso(ref urb_iso) = urb {
-            for iso_packet in urb_iso.iso_packets.iter() {
-                ioc_iso_packets
-                    .push(ioctl::IocIsoPacketGiveback {
-                        packet_actual: iso_packet.packet_actual as u32,
-                        status: iso_packet.status.to_errno_raw(true),
-                    })
-                    .expect("URB should not have more than 128 ISO packets");
-            }
-            ioc_giveback.iso_packets = ioc_iso_packets.as_mut_ptr();
-            ioc_giveback.packet_count = urb.packet_count() as i32;
-            ioc_giveback.error_count = urb.error_count();
-        }
-
-        // SAFETY: TODO: We allocate our own buffer for the iso packets,
-        //         and that shouuuuuld last throughout this call?
-        unsafe {
-            match ioctl::usb_vhci_giveback(self.dev.as_raw_fd(), &raw mut ioc_giveback) {
-                Err(nix::Error::ECANCELED) | Ok(_) => Ok(()),
-                Err(nix) => Err(std::io::Error::from(nix)),
-            }
-        }
+        .giveback(urb)
     }
 
     pub fn port_connect_any(&mut self, data_rate: DataRate) -> std::io::Result<Port> {
@@ -630,75 +736,31 @@ impl Vhci {
     }
 
     pub fn port_disable(&self, port: Port) -> std::io::Result<()> {
-        let mut ioc_port_stat = ioctl::IocPortStat {
-            change: PortChange::ENABLE.bits(),
-            index: port.get(),
-            ..Default::default()
-        };
-
-        // SAFETY: Both the file descriptor and raw mut pointer
-        //         are valid for the duration of this ioctl call.
-        unsafe {
-            ioctl::usb_vhci_portstat(self.dev.as_raw_fd(), &raw mut ioc_port_stat)
-                .map_err(std::io::Error::from)?
-        };
-        Ok(())
+        Remote {
+            dev: self.dev.as_raw_fd(),
+        }
+        .port_disable(port)
     }
 
     pub fn port_resumed(&self, port: Port) -> std::io::Result<()> {
-        let mut ioc_port_stat = ioctl::IocPortStat {
-            change: PortChange::SUSPEND.bits(),
-            index: port.get(),
-            ..Default::default()
-        };
-
-        // SAFETY: Both the file descriptor and raw mut pointer
-        //         are valid for the duration of this ioctl call.
-        unsafe {
-            ioctl::usb_vhci_portstat(self.dev.as_raw_fd(), &raw mut ioc_port_stat)
-                .map_err(std::io::Error::from)?
-        };
-        Ok(())
+        Remote {
+            dev: self.dev.as_raw_fd(),
+        }
+        .port_resumed(port)
     }
 
     pub fn port_overcurrent(&self, port: Port, set: bool) -> std::io::Result<()> {
-        let mut ioc_port_stat = ioctl::IocPortStat {
-            change: PortChange::OVERCURRENT.bits(),
-            index: port.get(),
-            ..Default::default()
-        };
-        if set {
-            ioc_port_stat.status = PortStatus::OVERCURRENT.bits();
+        Remote {
+            dev: self.dev.as_raw_fd(),
         }
-
-        // SAFETY: Both the file descriptor and raw mut pointer
-        //         are valid for the duration of this ioctl call.
-        unsafe {
-            ioctl::usb_vhci_portstat(self.dev.as_raw_fd(), &raw mut ioc_port_stat)
-                .map_err(std::io::Error::from)?
-        };
-        Ok(())
+        .port_overcurrent(port, set)
     }
 
     pub fn port_reset_done(&self, port: Port, enable: bool) -> std::io::Result<()> {
-        let mut ioc_port_stat = ioctl::IocPortStat {
-            index: port.get(),
-            change: PortChange::RESET.bits(),
-            ..Default::default()
-        };
-        if enable {
-            ioc_port_stat.status = PortStatus::ENABLE.bits();
-        } else {
-            ioc_port_stat.change |= PortChange::ENABLE.bits();
+        Remote {
+            dev: self.dev.as_raw_fd(),
         }
-
-        // SAFETY: Both the file descriptor and raw mut pointer
-        //         are valid for the duration of this ioctl call.
-        unsafe {
-            ioctl::usb_vhci_portstat(self.dev.as_raw_fd(), &raw mut ioc_port_stat)
-                .map_err(std::io::Error::from)?
-        };
-        Ok(())
+        .port_reset_done(port, enable)
     }
 }
 
@@ -819,7 +881,7 @@ impl TryFrom<ioctl::IocWork> for Work {
     }
 }
 
-mod ioctl {
+pub mod ioctl {
     use std::ffi::c_void;
 
     use nix::{ioctl_readwrite, ioctl_write_ptr};
@@ -1030,28 +1092,37 @@ mod ioctl {
 
 #[cfg(test)]
 mod tests {
-    use utils::{ClosedBoundedI16, OpenBoundedU8, TimeoutMillis};
+    use utils::{BoundedI16, BoundedU8, TimeoutMillis};
 
     use super::*;
 
-    const NUM_PORTS: OpenBoundedU8<0, 32> = OpenBoundedU8::new(1).unwrap();
+    const NUM_PORTS: BoundedU8<1, 32> = BoundedU8::new(1).unwrap();
+
+    #[test]
+    fn invalid_fd_fails() {
+        let mut vhci = Controller::open(NUM_PORTS).unwrap();
+        let remote = vhci.remote();
+        let port = vhci.port_connect_any(DataRate::Full).unwrap();
+        drop(vhci);
+        dbg!(remote.port_reset_done(port, true).unwrap_err());
+    }
 
     #[test]
     fn can_create_vhci() {
-        let _vhci = Vhci::open(NUM_PORTS).unwrap();
+        let _vhci = Controller::open(NUM_PORTS).unwrap();
     }
 
     #[test]
     fn can_connect_disconnect_port() {
-        let mut vhci = Vhci::open(NUM_PORTS).unwrap();
+        let mut vhci = Controller::open(NUM_PORTS).unwrap();
         let port = vhci.port_connect_any(DataRate::High).unwrap();
         vhci.port_disconnect(port).unwrap();
     }
 
     #[test]
     fn can_fetch_work() {
-        let num_ports = OpenBoundedU8::new(1).unwrap();
-        let mut vhci = Vhci::open(num_ports).unwrap();
+        let num_ports = BoundedU8::new(2).unwrap();
+        let mut vhci = Controller::open(num_ports).unwrap();
         let mut prev = PortStat {
             status: PortStatus::empty(),
             change: PortChange::empty(),
@@ -1059,7 +1130,7 @@ mod tests {
             flags: PortFlag::empty(),
         };
         let _urb = loop {
-            let timeout = TimeoutMillis::Time(ClosedBoundedI16::new(1000).unwrap());
+            let timeout = TimeoutMillis::Time(BoundedI16::new(500).unwrap());
             let work = vhci.fetch_work_timeout(timeout).unwrap();
             eprintln!("{work:?}");
             match work {
@@ -1088,5 +1159,6 @@ mod tests {
         };
 
         vhci.port_disconnect(Port::new(1).unwrap()).unwrap();
+        vhci.port_disconnect(Port::new(2).unwrap()).unwrap();
     }
 }

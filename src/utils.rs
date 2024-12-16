@@ -1,19 +1,16 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TimeoutMillis {
     // Unlimited, TODO: Find out why this times out immediately?
-    Time(ClosedBoundedI16<0, 1000>),
+    Time(BoundedI16<0, 1000>),
 }
 
-#[repr(transparent)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct OpenBoundedU8<const LOWER: u8, const UPPER: u8>(u8);
+#[repr(transparent)]
+pub struct BoundedU8<const LOWER_INC: u8, const UPPER_EX: u8>(u8);
 
-impl<const LOWER: u8, const UPPER: u8> nohash_hasher::IsEnabled for OpenBoundedU8<LOWER, UPPER> {}
-
-
-impl<const LOWER: u8, const UPPER: u8> OpenBoundedU8<LOWER, UPPER> {
+impl<const LOWER_INC: u8, const UPPER_EX: u8> BoundedU8<LOWER_INC, UPPER_EX> {
     pub const fn new(num: u8) -> Option<Self> {
-        if LOWER >= num || UPPER <= num {
+        if LOWER_INC > num || UPPER_EX <= num {
             None
         } else {
             Some(Self(num))
@@ -25,15 +22,33 @@ impl<const LOWER: u8, const UPPER: u8> OpenBoundedU8<LOWER, UPPER> {
     }
 }
 
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(transparent)]
-#[derive(Debug, Clone, Copy,PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct ClosedBoundedI16<const LOWER: i16, const UPPER: i16>(i16);
+pub struct BoundedU16<const LOWER_INC: u16, const UPPER_EX: u16>(u16);
 
-impl<const LOWER: i16, const UPPER: i16> nohash_hasher::IsEnabled for ClosedBoundedI16<LOWER, UPPER> {}
+impl<const LOWER_INC: u16, const UPPER_EX: u16> BoundedU16<LOWER_INC, UPPER_EX> {
+    pub const fn new(num: u16) -> Option<Self> {
+        if LOWER_INC > num || UPPER_EX <= num {
+            None
+        } else {
+            Some(Self(num))
+        }
+    }
 
-impl<const LOWER: i16, const UPPER: i16> ClosedBoundedI16<LOWER, UPPER> {
+    pub const fn get(&self) -> u16 {
+        self.0
+    }
+}
+
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[repr(transparent)]
+pub struct BoundedI16<const LOWER_INC: i16, const UPPER_EX: i16>(i16);
+
+impl<const LOWER_INC: i16, const UPPER_EX: i16> BoundedI16<LOWER_INC, UPPER_EX> {
     pub const fn new(num: i16) -> Option<Self> {
-        if LOWER > num || UPPER < num {
+        if LOWER_INC > num || UPPER_EX <= num {
             None
         } else {
             Some(Self(num))
