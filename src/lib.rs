@@ -419,6 +419,39 @@ pub enum Work {
     PortStat(PortStat),
 }
 
+#[derive(Debug)]
+pub struct WorkReceiver {
+    dev: std::os::unix::io::RawFd,
+}
+
+impl WorkReceiver {
+    pub fn fetch_work(&self) -> std::io::Result<Work> {
+        self.fetch_work_timeout(utils::TimeoutMillis::Time(
+            utils::BoundedI16::new(100).unwrap(),
+        ))
+    }
+
+    pub fn fetch_work_timeout(&self, timeout: utils::TimeoutMillis) -> std::io::Result<Work> {
+        let mut ioc_work = ioctl::IocWork {
+            timeout: match timeout {
+                // utils::TimeoutMillis::Unlimited => ioctl::USB_VHCI_TIMEOUT_INFINITE,
+                utils::TimeoutMillis::Time(time) => time.get(),
+            },
+            ..Default::default()
+        };
+
+        // SAFETY: We are using a valid file descriptor that we
+        //         are sure will last for the entire duration of this
+        //         ioctl. We also pass in a valid pointer for this
+        //         ioctl's return type.
+        unsafe {
+            ioctl::usb_vhci_fetchwork(self.dev, &raw mut ioc_work).map_err(std::io::Error::from)?
+        };
+
+        ioc_work.try_into().map_err(std::io::Error::from)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Remote {
     dev: std::os::unix::io::RawFd,
@@ -582,6 +615,7 @@ pub struct Controller {
     controller_id: i32,
     usb_busnum: i32,
     bus_id: Box<str>,
+    work_recv_split: bool,
 }
 
 impl Controller {
@@ -630,10 +664,21 @@ impl Controller {
     /// an object with less capabilities than the
     /// main controller.
     ///
-    /// 
+    ///
     pub fn remote(&self) -> Remote {
         Remote {
             dev: self.dev.as_raw_fd(),
+        }
+    }
+
+    pub fn work_receiver(&mut self) -> Option<WorkReceiver> {
+        if self.work_recv_split {
+            None
+        } else {
+            self.work_recv_split = true;
+            Some(WorkReceiver {
+                dev: self.dev.as_raw_fd(),
+            })
         }
     }
 
@@ -644,24 +689,14 @@ impl Controller {
     }
 
     pub fn fetch_work_timeout(&self, timeout: utils::TimeoutMillis) -> std::io::Result<Work> {
-        let mut ioc_work = ioctl::IocWork {
-            timeout: match timeout {
-                // utils::TimeoutMillis::Unlimited => ioctl::USB_VHCI_TIMEOUT_INFINITE,
-                utils::TimeoutMillis::Time(time) => time.get(),
-            },
-            ..Default::default()
-        };
-
-        // SAFETY: We are using a valid file descriptor that we
-        //         are sure will last for the entire duration of this
-        //         ioctl. We also pass in a valid pointer for this
-        //         ioctl's return type.
-        unsafe {
-            ioctl::usb_vhci_fetchwork(self.dev.as_raw_fd(), &raw mut ioc_work)
-                .map_err(std::io::Error::from)?
-        };
-
-        ioc_work.try_into().map_err(std::io::Error::from)
+        if self.work_recv_split {
+            Err(std::io::Error::from(std::io::ErrorKind::AlreadyExists))?
+        } else {
+            WorkReceiver {
+                dev: self.dev.as_raw_fd(),
+            }
+            .fetch_work_timeout(timeout)
+        }
     }
 
     pub fn fetch_data(&self, urb: &mut Urb) -> std::io::Result<()> {
