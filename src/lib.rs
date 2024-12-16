@@ -419,7 +419,7 @@ pub enum Work {
     PortStat(PortStat),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Remote {
     dev: std::os::unix::io::RawFd,
 }
