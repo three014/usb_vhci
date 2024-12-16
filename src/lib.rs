@@ -649,6 +649,7 @@ impl Controller {
                 .unwrap()
                 .trim_end_matches('\0')
                 .into(),
+            work_recv_split: false,
         })
     }
 
