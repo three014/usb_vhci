@@ -5,6 +5,8 @@ use std::{
     os::{fd::AsRawFd, unix::fs::OpenOptionsExt},
 };
 
+pub mod ioctl;
+pub mod usbfs;
 pub mod utils;
 pub use nix::libc;
 
@@ -425,6 +427,10 @@ pub struct WorkReceiver {
 }
 
 impl WorkReceiver {
+    const fn new(dev: std::os::unix::io::RawFd) -> Self {
+        Self { dev }
+    }
+
     pub fn fetch_work(&self) -> std::io::Result<Work> {
         self.fetch_work_timeout(utils::TimeoutMillis::Time(
             utils::BoundedI16::new(100).unwrap(),
@@ -448,7 +454,7 @@ impl WorkReceiver {
             ioctl::usb_vhci_fetchwork(self.dev, &raw mut ioc_work).map_err(std::io::Error::from)?
         };
 
-        ioc_work.try_into().map_err(std::io::Error::from)
+        Ok(ioc_work.into())
     }
 }
 
@@ -458,6 +464,10 @@ pub struct Remote {
 }
 
 impl Remote {
+    const fn new(dev: std::os::unix::io::RawFd) -> Self {
+        Self { dev }
+    }
+
     pub fn fetch_data(&self, urb: &mut Urb) -> std::io::Result<()> {
         let mut ioc_urb_data = ioctl::IocUrbData {
             handle: urb.handle().as_raw_handle(),
@@ -626,10 +636,7 @@ impl Controller {
             .custom_flags(nix::libc::O_NONBLOCK)
             .open(USB_VHCI_DEVICE_FILE)?;
 
-        let mut ioc_register = ioctl::IocRegister {
-            port_count: num_ports.get(),
-            ..Default::default()
-        };
+        let mut ioc_register = ioctl::IocRegister::new(num_ports.get());
 
         // SAFETY: We are using a valid file descriptor that we
         //         are sure will last for the entire duration of this
@@ -645,10 +652,12 @@ impl Controller {
             open_ports: BitVec::from_elem(num_ports.get() as usize, false),
             controller_id: ioc_register.id,
             usb_busnum: ioc_register.usb_busnum,
-            bus_id: std::str::from_utf8(&ioc_register.bus_id)
-                .unwrap()
-                .trim_end_matches('\0')
-                .into(),
+            bus_id: ioc_register
+                .bus_id()
+                .to_str()
+                .map(|s| s.trim_end_matches('\0'))
+                .map(Box::from)
+                .unwrap(),
             work_recv_split: false,
         })
     }
@@ -667,9 +676,7 @@ impl Controller {
     ///
     ///
     pub fn remote(&self) -> Remote {
-        Remote {
-            dev: self.dev.as_raw_fd(),
-        }
+        Remote::new(self.dev.as_raw_fd())
     }
 
     pub fn work_receiver(&mut self) -> Option<WorkReceiver> {
@@ -677,10 +684,12 @@ impl Controller {
             None
         } else {
             self.work_recv_split = true;
-            Some(WorkReceiver {
-                dev: self.dev.as_raw_fd(),
-            })
+            Some(WorkReceiver::new(self.dev.as_raw_fd()))
         }
+    }
+
+    pub fn return_work_receiver(&mut self, _recv: WorkReceiver) {
+        self.work_recv_split = false;
     }
 
     pub fn fetch_work(&self) -> std::io::Result<Work> {
@@ -701,17 +710,11 @@ impl Controller {
     }
 
     pub fn fetch_data(&self, urb: &mut Urb) -> std::io::Result<()> {
-        Remote {
-            dev: self.dev.as_raw_fd(),
-        }
-        .fetch_data(urb)
+        Remote::new(self.dev.as_raw_fd()).fetch_data(urb)
     }
 
     pub fn giveback(&self, urb: Urb) -> std::io::Result<()> {
-        Remote {
-            dev: self.dev.as_raw_fd(),
-        }
-        .giveback(urb)
+        Remote::new(self.dev.as_raw_fd()).giveback(urb)
     }
 
     pub fn port_connect_any(&mut self, data_rate: DataRate) -> std::io::Result<Port> {
@@ -772,31 +775,19 @@ impl Controller {
     }
 
     pub fn port_disable(&self, port: Port) -> std::io::Result<()> {
-        Remote {
-            dev: self.dev.as_raw_fd(),
-        }
-        .port_disable(port)
+        Remote::new(self.dev.as_raw_fd()).port_disable(port)
     }
 
     pub fn port_resumed(&self, port: Port) -> std::io::Result<()> {
-        Remote {
-            dev: self.dev.as_raw_fd(),
-        }
-        .port_resumed(port)
+        Remote::new(self.dev.as_raw_fd()).port_resumed(port)
     }
 
     pub fn port_overcurrent(&self, port: Port, set: bool) -> std::io::Result<()> {
-        Remote {
-            dev: self.dev.as_raw_fd(),
-        }
-        .port_overcurrent(port, set)
+        Remote::new(self.dev.as_raw_fd()).port_overcurrent(port, set)
     }
 
     pub fn port_reset_done(&self, port: Port, enable: bool) -> std::io::Result<()> {
-        Remote {
-            dev: self.dev.as_raw_fd(),
-        }
-        .port_reset_done(port, enable)
+        Remote::new(self.dev.as_raw_fd()).port_reset_done(port, enable)
     }
 }
 
@@ -811,24 +802,22 @@ impl From<ioctl::IocPortStat> for PortStat {
     }
 }
 
-impl TryFrom<ioctl::IocWork> for Work {
-    type Error = nix::Error;
-
-    fn try_from(ioc_work: ioctl::IocWork) -> Result<Self, Self::Error> {
+impl From<ioctl::IocWork> for Work {
+    fn from(ioc_work: ioctl::IocWork) -> Self {
         match ioc_work.typ {
-            ioctl::USB_VHCI_WORK_TYPE_PORT_STAT => {
+            ioctl::WorkType::PortStat => {
                 // SAFETY: The ioctl always tells us what type was written
                 //         through the "typ" parameter, so we can safely
                 //         use this variant.
-                Ok(Work::PortStat(unsafe { ioc_work.work.port.into() }))
+                Work::PortStat(unsafe { ioc_work.work.port.into() })
             }
-            ioctl::USB_VHCI_WORK_TYPE_PROCESS_URB => {
+            ioctl::WorkType::ProcessUrb => {
                 // SAFETY: The ioctl always tells us what type was written
                 //         through the "typ" parameter, so we can safely
                 //         use this variant.
                 let ioc_urb = unsafe { ioc_work.work.urb };
                 let urb = match ioc_urb.typ {
-                    ioctl::USB_VHCI_URB_TYPE_ISO => Urb::Iso(UrbIso {
+                    ioctl::UrbType::Iso => Urb::Iso(UrbIso {
                         status: IsoStatus::Pending,
                         handle: UrbHandle(ioc_work.handle),
                         buffer: vec![0; ioc_urb.buffer_length.try_into().unwrap()]
@@ -845,7 +834,7 @@ impl TryFrom<ioctl::IocWork> for Work {
                             .contains(UrbFlags::ISO_ASAP),
                         interval: ioc_urb.interval,
                     }),
-                    ioctl::USB_VHCI_URB_TYPE_INT => Urb::Int(UrbInt {
+                    ioctl::UrbType::Int => Urb::Int(UrbInt {
                         status: IsoStatus::Pending,
                         handle: UrbHandle(ioc_work.handle),
                         buffer: {
@@ -865,7 +854,7 @@ impl TryFrom<ioctl::IocWork> for Work {
                             .contains(UrbFlags::SHORT_NOT_OK),
                         interval: ioc_urb.interval,
                     }),
-                    ioctl::USB_VHCI_URB_TYPE_CONTROL => Urb::Ctrl(UrbControl {
+                    ioctl::UrbType::Ctrl => Urb::Ctrl(UrbControl {
                         status: IsoStatus::Pending,
                         handle: UrbHandle(ioc_work.handle),
                         buffer: {
@@ -887,7 +876,7 @@ impl TryFrom<ioctl::IocWork> for Work {
                         bm_request_type: ioc_urb.setup_packet.bm_request_type,
                         b_request: ioc_urb.setup_packet.b_request,
                     }),
-                    ioctl::USB_VHCI_URB_TYPE_BULK => Urb::Bulk(UrbBulk {
+                    ioctl::UrbType::Bulk => Urb::Bulk(UrbBulk {
                         status: IsoStatus::Pending,
                         handle: UrbHandle(ioc_work.handle),
                         buffer: {
@@ -906,224 +895,13 @@ impl TryFrom<ioctl::IocWork> for Work {
                         send_zero_packet: UrbFlags::from_bits_retain(ioc_urb.flags)
                             .contains(UrbFlags::ZERO_PACKET),
                     }),
-                    _ => Err(nix::Error::EBADMSG)?,
                 };
 
-                Ok(Work::ProcessUrb(urb))
+                Work::ProcessUrb(urb)
             }
-            ioctl::USB_VHCI_WORK_TYPE_CANCEL_URB => Ok(Work::CancelUrb(UrbHandle(ioc_work.handle))),
-            _ => Err(nix::Error::EBADMSG),
+            ioctl::WorkType::CancelUrb => Work::CancelUrb(UrbHandle(ioc_work.handle)),
         }
     }
-}
-
-pub mod ioctl {
-    use std::ffi::c_void;
-
-    use nix::{ioctl_readwrite, ioctl_write_ptr};
-
-    pub const USB_VHCI_HCD_IOC_MAGIC: u8 = 138;
-    pub const USB_VHCI_HCD_IOCREGISTER: u8 = 0;
-    pub const USB_VHCI_HCD_IOCPORTSTAT: u8 = 1;
-    pub const USB_VHCI_HCD_IOCFETCHWORK_RO: u8 = 2;
-    pub const USB_VHCI_HCD_IOCFETCHWORK: u8 = 2;
-    pub const USB_VHCI_HCD_IOCGIVEBACK: u8 = 3;
-    pub const USB_VHCI_HCD_IOCGIVEBACK32: u8 = 3;
-    pub const USB_VHCI_HCD_IOCFETCHDATA: u8 = 4;
-    pub const USB_VHCI_HCD_IOCFETCHDATA32: u8 = 4;
-
-    pub const USB_VHCI_PORT_STAT_FLAG_RESUMING: u8 = 0x01;
-
-    pub const USB_VHCI_URB_FLAGS_SHORT_NOT_OK: u16 = 0x0001;
-    pub const USB_VHCI_URB_FLAGS_ISO_ASAP: u16 = 0x0002;
-    pub const USB_VHCI_URB_FLAGS_ZERO_PACKET: u16 = 0x0040;
-
-    pub const USB_VHCI_URB_TYPE_ISO: u8 = 0;
-    pub const USB_VHCI_URB_TYPE_INT: u8 = 1;
-    pub const USB_VHCI_URB_TYPE_CONTROL: u8 = 2;
-    pub const USB_VHCI_URB_TYPE_BULK: u8 = 3;
-
-    pub const USB_VHCI_TIMEOUT_INFINITE: i16 = -1;
-
-    pub const USB_VHCI_WORK_TYPE_PORT_STAT: u8 = 0;
-    pub const USB_VHCI_WORK_TYPE_PROCESS_URB: u8 = 1;
-    pub const USB_VHCI_WORK_TYPE_CANCEL_URB: u8 = 2;
-
-    pub const URB_RQ_GET_STATUS: u8 = 0;
-    pub const URB_RQ_CLEAR_FEATURE: u8 = 1;
-    pub const URB_RQ_SET_FEATURE: u8 = 3;
-    pub const URB_RQ_SET_ADDRESS: u8 = 5;
-    pub const URB_RQ_GET_DESCRIPTOR: u8 = 6;
-    pub const URB_RQ_SET_DESCRIPTOR: u8 = 7;
-    pub const URB_RQ_GET_CONFIGURATION: u8 = 8;
-    pub const URB_RQ_SET_CONFIGURATION: u8 = 9;
-    pub const URB_RQ_GET_INTERFACE: u8 = 10;
-    pub const URB_RQ_SET_INTERFACE: u8 = 11;
-    pub const URB_RQ_SYNCH_FRAME: u8 = 12;
-
-    #[derive(Clone, Copy, Default)]
-    #[repr(C)]
-    pub struct IocRegister {
-        pub id: i32,
-        pub usb_busnum: i32,
-        pub bus_id: [u8; 20],
-        pub port_count: u8,
-    }
-
-    ioctl_readwrite!(
-        usb_vhci_register,
-        USB_VHCI_HCD_IOC_MAGIC,
-        USB_VHCI_HCD_IOCREGISTER,
-        IocRegister
-    );
-
-    #[derive(Clone, Copy, Default)]
-    #[repr(C)]
-    pub struct IocPortStat {
-        pub status: u16,
-        pub change: u16,
-        pub index: u8,
-        pub flags: u8,
-        pub reserved1: u8,
-        pub reserved2: u8,
-    }
-
-    ioctl_write_ptr!(
-        usb_vhci_portstat,
-        USB_VHCI_HCD_IOC_MAGIC,
-        USB_VHCI_HCD_IOCPORTSTAT,
-        IocPortStat
-    );
-
-    #[derive(Clone, Copy, Default)]
-    #[repr(C)]
-    pub struct IocSetupPacket {
-        pub bm_request_type: u8,
-        pub b_request: u8,
-        pub w_value: u16,
-        pub w_index: u16,
-        pub w_length: u16,
-    }
-
-    #[derive(Clone, Copy, Default)]
-    #[repr(C)]
-    pub struct IocUrb {
-        pub setup_packet: IocSetupPacket,
-        pub buffer_length: i32,
-        pub interval: i32,
-        pub packet_count: i32,
-        pub flags: u16,
-        pub address: u8,
-        pub endpoint: u8,
-        pub typ: u8,
-    }
-
-    #[derive(Clone, Copy)]
-    #[repr(C)]
-    pub union IocWorkUnion {
-        pub urb: IocUrb,
-        pub port: IocPortStat,
-    }
-
-    impl Default for IocWorkUnion {
-        fn default() -> Self {
-            Self {
-                port: Default::default(),
-            }
-        }
-    }
-
-    #[derive(Clone, Copy, Default)]
-    #[repr(C)]
-    pub struct IocWork {
-        pub handle: u64,
-        pub work: IocWorkUnion,
-        pub timeout: i16,
-        pub typ: u8,
-    }
-
-    ioctl_readwrite!(
-        usb_vhci_fetchwork,
-        USB_VHCI_HCD_IOC_MAGIC,
-        USB_VHCI_HCD_IOCFETCHWORK,
-        IocWork
-    );
-
-    #[derive(Clone, Copy, Default)]
-    #[repr(C)]
-    pub struct IocIsoPacketData {
-        pub offset: u32,
-        pub packet_length: u32,
-    }
-
-    #[derive(Clone, Copy)]
-    #[repr(C)]
-    pub struct IocUrbData {
-        pub handle: u64,
-        pub buffer: *mut c_void,
-        pub iso_packets: *mut IocIsoPacketData,
-        pub buffer_length: i32,
-        pub packet_count: i32,
-    }
-
-    impl Default for IocUrbData {
-        fn default() -> Self {
-            Self {
-                handle: 0,
-                buffer: std::ptr::null_mut(),
-                iso_packets: std::ptr::null_mut(),
-                buffer_length: 0,
-                packet_count: 0,
-            }
-        }
-    }
-
-    ioctl_write_ptr!(
-        usb_vhci_fetchdata,
-        USB_VHCI_HCD_IOC_MAGIC,
-        USB_VHCI_HCD_IOCFETCHDATA,
-        IocUrbData
-    );
-
-    #[derive(Debug, Clone, Copy, Default)]
-    #[repr(C)]
-    pub struct IocIsoPacketGiveback {
-        pub packet_actual: u32,
-        pub status: i32,
-    }
-
-    #[derive(Clone, Copy)]
-    #[repr(C)]
-    pub struct IocGiveback {
-        pub handle: u64,
-        pub buffer: *mut c_void,
-        pub iso_packets: *mut IocIsoPacketGiveback,
-        pub status: i32,
-        pub buffer_actual: i32,
-        pub packet_count: i32,
-        pub error_count: i32,
-    }
-
-    impl Default for IocGiveback {
-        fn default() -> Self {
-            Self {
-                handle: 0,
-                buffer: std::ptr::null_mut(),
-                iso_packets: std::ptr::null_mut(),
-                status: 0,
-                buffer_actual: 0,
-                packet_count: 0,
-                error_count: 0,
-            }
-        }
-    }
-
-    ioctl_write_ptr!(
-        usb_vhci_giveback,
-        USB_VHCI_HCD_IOC_MAGIC,
-        USB_VHCI_HCD_IOCGIVEBACK,
-        IocGiveback
-    );
 }
 
 #[cfg(test)]
