@@ -4,6 +4,7 @@ use std::{
 };
 
 use nix::{ioctl_readwrite, ioctl_write_ptr};
+use num_enum::TryFromPrimitive;
 use zerocopy_derive::*;
 
 use crate::{
@@ -51,11 +52,22 @@ pub const URB_RQ_SET_INTERFACE: u8 = 11;
 pub const URB_RQ_SYNCH_FRAME: u8 = 12;
 
 #[derive(
-    Debug, Clone, Copy, PartialEq, Eq, IntoBytes, FromZeros, Unaligned, Immutable, KnownLayout,
+    Default,
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    IntoBytes,
+    FromZeros,
+    Unaligned,
+    Immutable,
+    KnownLayout,
 )]
 #[repr(u8)]
 pub enum UrbRequest {
     /// Needs to use a literal '0' for zerocopy. Equal to [`URB_RQ_GET_STATUS`]
+    #[default]
     GetStatus = 0,
     ClearFeature = URB_RQ_CLEAR_FEATURE,
     SetFeature = URB_RQ_SET_FEATURE,
@@ -69,7 +81,7 @@ pub enum UrbRequest {
     SynchFrame = URB_RQ_SYNCH_FRAME,
 }
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, KnownLayout, TryFromBytes)]
 #[repr(C)]
 pub struct IocRegister {
     pub id: i32,
@@ -100,7 +112,7 @@ ioctl_readwrite!(
     IocRegister
 );
 
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Default, KnownLayout, Immutable, TryFromBytes, IntoBytes)]
 #[repr(C)]
 pub struct IocPortStat {
     pub status: u16,
@@ -136,18 +148,18 @@ ioctl_write_ptr!(
     IocPortStat
 );
 
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Default, KnownLayout, Immutable, TryFromBytes, IntoBytes)]
 #[repr(C)]
 pub struct IocSetupPacket {
     pub bm_request_type: u8,
-    pub b_request: u8,
+    pub b_request: UrbRequest,
     pub w_value: u16,
     pub w_index: u16,
     pub w_length: u16,
 }
 
 impl IocSetupPacket {
-    pub const fn request(&self) -> u8 {
+    pub const fn request(&self) -> UrbRequest {
         self.b_request
     }
 
@@ -155,8 +167,8 @@ impl IocSetupPacket {
         ControlType::try_from(self.bm_request_type & 0x70).unwrap()
     }
 
-    pub fn direction(&self) -> Direction {
-        Direction::try_from(self.bm_request_type & 0x80).unwrap()
+    pub const fn direction(&self) -> Direction {
+        Direction::from_u8(self.bm_request_type & 0x80).unwrap()
     }
 
     pub fn recipient(&self) -> Recipient {
@@ -199,6 +211,72 @@ pub enum UrbType {
     Bulk = USB_VHCI_URB_TYPE_BULK,
 }
 
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    Default,
+    KnownLayout,
+    IntoBytes,
+    FromZeros,
+    Immutable,
+    PartialEq,
+    Eq,
+    Unaligned,
+)]
+#[repr(transparent)]
+pub struct Address(pub u8);
+
+impl Address {
+    /// Returns whether the address is meant for
+    /// any USB device that does not already have
+    /// an assigned address.
+    pub const fn is_anycast(&self) -> bool {
+        (self.0 & 0x7F) == 0
+    }
+}
+
+#[derive(
+    Debug,
+    Default,
+    Clone,
+    Copy,
+    KnownLayout,
+    IntoBytes,
+    FromBytes,
+    Immutable,
+    PartialEq,
+    Eq,
+    Unaligned,
+)]
+#[repr(transparent)]
+pub struct Endpoint(pub u8);
+
+impl Endpoint {
+    pub const fn direction(&self) -> Direction {
+        Direction::from_u8(self.0 & 0x80).unwrap()
+    }
+}
+
+pub struct Iso<'a>(&'a IocUrb);
+pub struct Int<'a>(&'a IocUrb);
+pub struct Ctrl<'a>(&'a IocUrb);
+
+impl Ctrl<'_> {
+    pub const fn setup_packet(&self) -> &IocSetupPacket {
+        &self.0.setup_packet
+    }
+}
+
+pub struct Bulk<'a>(&'a IocUrb);
+
+pub enum Urb<'a> {
+    Iso(Iso<'a>),
+    Int(Int<'a>),
+    Ctrl(Ctrl<'a>),
+    Bulk(Bulk<'a>),
+}
+
 #[derive(Clone, Copy, Default)]
 #[repr(C)]
 pub struct IocUrb {
@@ -207,9 +285,28 @@ pub struct IocUrb {
     pub interval: i32,
     pub packet_count: i32,
     pub flags: u16,
-    pub address: u8,
-    pub endpoint: u8,
+    pub address: Address,
+    pub endpoint: Endpoint,
     pub typ: UrbType,
+}
+
+impl IocUrb {
+    /// Unlike [`IocWork::get`], this struct
+    /// contains no union data. With all data
+    /// being initialized before use, this function
+    /// is marked safe.
+    ///
+    /// However, incorrect behavior can still occur
+    /// if `IocUrb::typ` does not match the data
+    /// given to this struct.
+    pub fn get(&self) -> Urb<'_> {
+        match self.typ {
+            UrbType::Iso => Urb::Iso(Iso(self)),
+            UrbType::Int => Urb::Int(Int(self)),
+            UrbType::Ctrl => Urb::Ctrl(Ctrl(self)),
+            UrbType::Bulk => Urb::Bulk(Bulk(self)),
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -227,68 +324,14 @@ impl Default for IocWorkUnion {
     }
 }
 
-#[derive(Clone)]
-pub struct PortStat<'a>(&'a IocWork);
-
-impl PortStat<'_> {
-    /// # Safety
-    ///
-    /// The caller must not modify the `IocWork::typ` field
-    /// if this work item came from the vhci controller, or else
-    /// undefined behavior follows.
-    pub unsafe fn get(&self) -> &IocPortStat {
-        assert!(matches!(self.0.typ, WorkType::PortStat));
-
-        // SAFETY: We ensure that the discriminator matches
-        //         the cancel urb value, and the caller has
-        //         not modified the `IocWork::typ` field.
-        unsafe { &self.0.work.port }
-    }
-}
-
-#[derive(Clone)]
-pub struct ProcessUrb<'a>(&'a IocWork);
-
-impl ProcessUrb<'_> {
-    /// # Safety
-    ///
-    /// The caller must not modify the `IocWork::typ` field
-    /// if this work item came from the vhci controller, or else
-    /// undefined behavior follows.
-    pub unsafe fn get(&self) -> &IocUrb {
-        assert!(matches!(self.0.typ, WorkType::ProcessUrb));
-
-        // SAFETY: We ensure that the discriminator matches
-        //         the cancel urb value, and the caller has
-        //         not modified the `IocWork::typ` field.
-        unsafe { &self.0.work.urb }
-    }
-}
-
-#[derive(Clone)]
-pub struct CancelUrb<'a>(&'a IocWork);
-
-impl CancelUrb<'_> {
-    /// # Safety
-    ///
-    /// The caller must not modify the `IocWork::typ` field
-    /// if this work item came from the vhci controller, or else
-    /// undefined behavior follows.
-    pub unsafe fn get(&self) -> &IocUrb {
-        assert!(matches!(self.0.typ, WorkType::CancelUrb));
-
-        // SAFETY: We ensure that the discriminator matches
-        //         the cancel urb value, and the caller has
-        //         not modified the `IocWork::typ` field.
-        unsafe { &self.0.work.urb }
-    }
-}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UrbHandle(pub u64);
 
 #[derive(Clone)]
 pub enum Work<'a> {
-    PortStat(PortStat<'a>),
-    ProcessUrb(ProcessUrb<'a>),
-    CancelUrb(CancelUrb<'a>),
+    PortStat(&'a IocPortStat),
+    ProcessUrb(&'a IocUrb),
+    CancelUrb(UrbHandle),
 }
 
 #[derive(
@@ -322,11 +365,19 @@ pub struct IocWork {
 }
 
 impl IocWork {
-    pub const fn get(&self) -> Work {
+    /// # Safety
+    ///
+    /// The caller must make sure that `IocWork::work` is the
+    /// same type as what's specified in `IocWork::typ`.
+    ///
+    /// If this work item was returned from an ioctl call, then
+    /// the above will always be true.
+    pub const unsafe fn get(&self) -> Work {
+        // SAFETY: Caller upholds safety contract in function description.
         match self.typ {
-            WorkType::PortStat => Work::PortStat(PortStat(self)),
-            WorkType::ProcessUrb => Work::ProcessUrb(ProcessUrb(self)),
-            WorkType::CancelUrb => Work::CancelUrb(CancelUrb(self)),
+            WorkType::PortStat => Work::PortStat(unsafe { &self.work.port }),
+            WorkType::ProcessUrb => Work::ProcessUrb(unsafe { &self.work.urb }),
+            WorkType::CancelUrb => Work::CancelUrb(UrbHandle(self.handle)),
         }
     }
 }

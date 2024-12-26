@@ -1,7 +1,7 @@
 use num_enum::TryFromPrimitive;
 
 /// Transfer direction.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, TryFromPrimitive)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum Direction {
     /// Host to device.
@@ -9,6 +9,16 @@ pub enum Direction {
 
     /// Device to host.
     In = 1,
+}
+
+impl Direction {
+    pub const fn from_u8(num: u8) -> Option<Self> {
+        match num {
+            0 => Some(Direction::Out),
+            1 => Some(Direction::In),
+            _ => None,
+        }
+    }
 }
 
 /// Specification defining the request
@@ -26,7 +36,7 @@ pub enum ControlType {
 }
 
 /// Entity targeted by the request.
-#[derive(Debug,Clone, Copy, PartialEq, Eq, TryFromPrimitive)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, TryFromPrimitive)]
 #[repr(u8)]
 pub enum Recipient {
     /// Request made to device as a whole.

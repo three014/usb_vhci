@@ -1,51 +1,24 @@
 use bit_vec::BitVec;
 use bitflags::bitflags;
+use ioctl::{Address, Endpoint};
 use std::{
     ops::{Add, Sub},
-    os::{fd::AsRawFd, unix::fs::OpenOptionsExt},
+    os::{
+        fd::{AsFd, AsRawFd},
+        unix::fs::OpenOptionsExt,
+    },
 };
+use usbfs::Direction;
+use utils::{BoundedI16, BoundedU8, TimeoutMillis};
+
+pub use nix::libc;
 
 pub mod ioctl;
 pub mod usbfs;
 pub mod utils;
-pub use nix::libc;
 
 pub const MAX_ISO_PACKETS: usize = 64;
 static USB_VHCI_DEVICE_FILE: &str = "/dev/usb-vhci";
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub struct Endpoint(u8);
-
-impl Endpoint {
-    pub const fn direction(&self) -> Dir {
-        match !(self.get() & 0x80) != 0 {
-            true => Dir::Out,
-            false => Dir::In,
-        }
-    }
-
-    pub const fn is_out(&self) -> bool {
-        matches!(self.direction(), Dir::Out)
-    }
-
-    pub const fn is_in(&self) -> bool {
-        matches!(self.direction(), Dir::In)
-    }
-
-    pub const fn get(&self) -> u8 {
-        self.0
-    }
-
-    pub const fn new(epadr: u8) -> Endpoint {
-        Endpoint(epadr)
-    }
-}
-
-impl From<u8> for Endpoint {
-    fn from(epadr: u8) -> Self {
-        Endpoint::new(epadr)
-    }
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Dir {
@@ -54,13 +27,13 @@ pub enum Dir {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct Port(utils::BoundedU8<1, 32>);
+pub struct Port(BoundedU8<1, 32>);
 
 impl nohash_hasher::IsEnabled for Port {}
 
 impl Port {
     pub const fn new(port: u8) -> Option<Self> {
-        if let Some(num) = utils::BoundedU8::new(port) {
+        if let Some(num) = BoundedU8::new(port) {
             Some(Self(num))
         } else {
             None
@@ -197,7 +170,7 @@ pub struct UrbIso {
     iso_packets: Box<[IsoPacket]>,
     error_count: i32,
     /// address
-    devadr: u8,
+    devadr: Address,
     /// endpoint
     epadr: Endpoint,
     asap: bool,
@@ -209,7 +182,7 @@ pub struct UrbInt {
     status: IsoStatus,
     handle: UrbHandle,
     buffer: Vec<u8>,
-    devadr: u8,
+    devadr: Address,
     epadr: Endpoint,
     short_not_ok: bool,
     interval: i32,
@@ -220,13 +193,13 @@ pub struct UrbControl {
     status: IsoStatus,
     handle: UrbHandle,
     buffer: Vec<u8>,
-    pub devadr: u8,
+    pub devadr: Address,
     pub epadr: Endpoint,
     pub w_value: u16,
     pub w_index: u16,
     pub w_length: u16,
     pub bm_request_type: u8,
-    pub b_request: u8,
+    pub b_request: ioctl::UrbRequest,
 }
 
 #[derive(Debug, Clone)]
@@ -234,7 +207,7 @@ pub struct UrbBulk {
     status: IsoStatus,
     handle: UrbHandle,
     buffer: Vec<u8>,
-    devadr: u8,
+    devadr: Address,
     epadr: Endpoint,
     send_zero_packet: bool,
 }
@@ -248,7 +221,7 @@ pub enum Urb {
 }
 
 impl Urb {
-    pub const fn direction(&self) -> Dir {
+    pub const fn direction(&self) -> Direction {
         match self {
             Urb::Iso(urb_iso) => urb_iso.epadr.direction(),
             Urb::Int(urb_int) => urb_int.epadr.direction(),
@@ -322,7 +295,7 @@ impl Urb {
         }
     }
 
-    pub const fn devadr(&self) -> u8 {
+    pub const fn devadr(&self) -> Address {
         match self {
             Urb::Iso(urb_iso) => urb_iso.devadr,
             Urb::Int(urb_int) => urb_int.devadr,
@@ -518,7 +491,7 @@ impl Remote {
         let mut ioc_iso_packets =
             heapless::Vec::<ioctl::IocIsoPacketGiveback, MAX_ISO_PACKETS>::new();
         assert!(urb.packet_count() <= MAX_ISO_PACKETS);
-        if urb.epadr().is_in() && ioc_giveback.buffer_actual > 0 {
+        if matches!(urb.epadr().direction(), Direction::In) && ioc_giveback.buffer_actual > 0 {
             ioc_giveback.buffer = urb.buffer().as_ptr().cast_mut().cast();
         }
         if let Urb::Iso(ref urb_iso) = urb {
@@ -629,7 +602,7 @@ pub struct Controller {
 }
 
 impl Controller {
-    pub fn open(num_ports: utils::BoundedU8<1, 32>) -> std::io::Result<Self> {
+    pub fn open(num_ports: BoundedU8<1, 32>) -> std::io::Result<Self> {
         let device = std::fs::OpenOptions::new()
             .read(true)
             .write(true)
@@ -693,19 +666,15 @@ impl Controller {
     }
 
     pub fn fetch_work(&self) -> std::io::Result<Work> {
-        self.fetch_work_timeout(utils::TimeoutMillis::Time(
-            utils::BoundedI16::new(100).unwrap(),
-        ))
+        const DEFAULT_TIMEOUT: TimeoutMillis = TimeoutMillis::Time(BoundedI16::new(100).unwrap());
+        self.fetch_work_timeout(DEFAULT_TIMEOUT)
     }
 
-    pub fn fetch_work_timeout(&self, timeout: utils::TimeoutMillis) -> std::io::Result<Work> {
+    pub fn fetch_work_timeout(&self, timeout: TimeoutMillis) -> std::io::Result<Work> {
         if self.work_recv_split {
             Err(std::io::Error::from(std::io::ErrorKind::AlreadyExists))?
         } else {
-            WorkReceiver {
-                dev: self.dev.as_raw_fd(),
-            }
-            .fetch_work_timeout(timeout)
+            WorkReceiver::new(self.dev.as_raw_fd()).fetch_work_timeout(timeout)
         }
     }
 
@@ -840,11 +809,12 @@ impl From<ioctl::IocWork> for Work {
                         buffer: {
                             let mut buf = Vec::new();
                             buf.reserve_exact(ioc_urb.buffer_length.try_into().unwrap());
-                            let actual_len = if Endpoint::new(ioc_urb.endpoint).is_out() {
-                                ioc_urb.buffer_length
-                            } else {
-                                0
-                            };
+                            let actual_len =
+                                if matches!(ioc_urb.endpoint.direction(), Direction::Out) {
+                                    ioc_urb.buffer_length
+                                } else {
+                                    0
+                                };
                             buf.resize(actual_len.try_into().unwrap(), 0);
                             buf
                         },
@@ -860,11 +830,12 @@ impl From<ioctl::IocWork> for Work {
                         buffer: {
                             let mut buf = Vec::new();
                             buf.reserve_exact(ioc_urb.buffer_length.try_into().unwrap());
-                            let actual_len = if Endpoint::new(ioc_urb.endpoint).is_out() {
-                                ioc_urb.buffer_length
-                            } else {
-                                0
-                            };
+                            let actual_len =
+                                if matches!(ioc_urb.endpoint.direction(), Direction::Out) {
+                                    ioc_urb.buffer_length
+                                } else {
+                                    0
+                                };
                             buf.resize(actual_len.try_into().unwrap(), 0);
                             buf
                         },
@@ -882,11 +853,12 @@ impl From<ioctl::IocWork> for Work {
                         buffer: {
                             let mut buf = Vec::new();
                             buf.reserve_exact(ioc_urb.buffer_length.try_into().unwrap());
-                            let actual_len = if Endpoint::new(ioc_urb.endpoint).is_out() {
-                                ioc_urb.buffer_length
-                            } else {
-                                0
-                            };
+                            let actual_len =
+                                if matches!(ioc_urb.endpoint.direction(), Direction::Out) {
+                                    ioc_urb.buffer_length
+                                } else {
+                                    0
+                                };
                             buf.resize(actual_len.try_into().unwrap(), 0);
                             buf
                         },
