@@ -4,7 +4,8 @@ use std::{
 };
 
 use nix::{ioctl_readwrite, ioctl_write_ptr};
-use num_enum::TryFromPrimitive;
+
+#[cfg(feature = "zerocopy")]
 use zerocopy_derive::*;
 
 use crate::{
@@ -51,19 +52,11 @@ pub const URB_RQ_GET_INTERFACE: u8 = 10;
 pub const URB_RQ_SET_INTERFACE: u8 = 11;
 pub const URB_RQ_SYNCH_FRAME: u8 = 12;
 
-#[derive(
-    Default,
-    Debug,
-    Clone,
-    Copy,
-    PartialEq,
-    Eq,
-    IntoBytes,
-    FromZeros,
-    Unaligned,
-    Immutable,
-    KnownLayout,
+#[cfg_attr(
+    feature = "zerocopy",
+    derive(IntoBytes, FromZeros, Unaligned, Immutable, KnownLayout,)
 )]
+#[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum UrbRequest {
     /// Needs to use a literal '0' for zerocopy. Equal to [`URB_RQ_GET_STATUS`]
@@ -80,8 +73,8 @@ pub enum UrbRequest {
     SetInterface = URB_RQ_SET_INTERFACE,
     SynchFrame = URB_RQ_SYNCH_FRAME,
 }
-
-#[derive(Debug, Clone, Copy, Default, KnownLayout, TryFromBytes)]
+#[cfg_attr(feature = "zerocopy", derive(Immutable, KnownLayout, TryFromBytes))]
+#[derive(Debug, Clone, Copy, Default)]
 #[repr(C)]
 pub struct IocRegister {
     pub id: i32,
@@ -111,8 +104,11 @@ ioctl_readwrite!(
     USB_VHCI_HCD_IOCREGISTER,
     IocRegister
 );
-
-#[derive(Clone, Copy, Default, KnownLayout, Immutable, TryFromBytes, IntoBytes)]
+#[cfg_attr(
+    feature = "zerocopy",
+    derive(IntoBytes, TryFromBytes, Immutable, KnownLayout,)
+)]
+#[derive(Clone, Copy, Default)]
 #[repr(C)]
 pub struct IocPortStat {
     pub status: u16,
@@ -148,7 +144,11 @@ ioctl_write_ptr!(
     IocPortStat
 );
 
-#[derive(Clone, Copy, Default, KnownLayout, Immutable, TryFromBytes, IntoBytes)]
+#[cfg_attr(
+    feature = "zerocopy",
+    derive(IntoBytes, TryFromBytes, Immutable, KnownLayout)
+)]
+#[derive(Clone, Copy, Default)]
 #[repr(C)]
 pub struct IocSetupPacket {
     pub bm_request_type: u8,
@@ -159,26 +159,32 @@ pub struct IocSetupPacket {
 }
 
 impl IocSetupPacket {
+    #[inline(always)]
     pub const fn request(&self) -> UrbRequest {
         self.b_request
     }
 
-    pub fn control_type(&self) -> ControlType {
-        ControlType::try_from(self.bm_request_type & 0x70).unwrap()
+    #[inline(always)]
+    pub const fn control_type(&self) -> ControlType {
+        ControlType::from_u8(self.bm_request_type & 0x70).unwrap()
     }
 
+    #[inline(always)]
     pub const fn direction(&self) -> Direction {
         Direction::from_u8(self.bm_request_type & 0x80).unwrap()
     }
 
-    pub fn recipient(&self) -> Recipient {
-        Recipient::try_from(self.bm_request_type & 0xF).unwrap()
+    #[inline(always)]
+    pub const fn recipient(&self) -> Recipient {
+        Recipient::from_u8(self.bm_request_type & 0xF).unwrap()
     }
 
+    #[inline(always)]
     pub const fn value(&self) -> u16 {
         self.w_value
     }
 
+    #[inline(always)]
     pub const fn index(&self) -> u16 {
         self.w_index
     }
@@ -188,19 +194,11 @@ impl IocSetupPacket {
     }
 }
 
-#[derive(
-    Default,
-    Debug,
-    Clone,
-    Copy,
-    PartialEq,
-    Eq,
-    FromZeros,
-    IntoBytes,
-    Immutable,
-    Unaligned,
-    KnownLayout,
+#[cfg_attr(
+    feature = "zerocopy",
+    derive(IntoBytes, FromZeros, Immutable, KnownLayout, Unaligned)
 )]
+#[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum UrbType {
     /// Needs to use a literal '0' for zerocopy. Equal to [`USB_VHCI_URB_TYPE_ISO`]
@@ -211,19 +209,11 @@ pub enum UrbType {
     Bulk = USB_VHCI_URB_TYPE_BULK,
 }
 
-#[derive(
-    Debug,
-    Clone,
-    Copy,
-    Default,
-    KnownLayout,
-    IntoBytes,
-    FromZeros,
-    Immutable,
-    PartialEq,
-    Eq,
-    Unaligned,
+#[cfg_attr(
+    feature = "zerocopy",
+    derive(IntoBytes, FromBytes, Immutable, KnownLayout, Unaligned)
 )]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 #[repr(transparent)]
 pub struct Address(pub u8);
 
@@ -236,19 +226,11 @@ impl Address {
     }
 }
 
-#[derive(
-    Debug,
-    Default,
-    Clone,
-    Copy,
-    KnownLayout,
-    IntoBytes,
-    FromBytes,
-    Immutable,
-    PartialEq,
-    Eq,
-    Unaligned,
+#[cfg_attr(
+    feature = "zerocopy",
+    derive(IntoBytes, FromBytes, Immutable, KnownLayout, Unaligned)
 )]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 #[repr(transparent)]
 pub struct Endpoint(pub u8);
 
@@ -277,7 +259,11 @@ pub enum Urb<'a> {
     Bulk(Bulk<'a>),
 }
 
-#[derive(Clone, Copy, Default)]
+#[cfg_attr(
+    feature = "zerocopy",
+    derive(IntoBytes, TryFromBytes, Immutable, KnownLayout)
+)]
+#[derive(Clone, Default, Copy)]
 #[repr(C)]
 pub struct IocUrb {
     pub setup_packet: IocSetupPacket,
@@ -288,6 +274,7 @@ pub struct IocUrb {
     pub address: Address,
     pub endpoint: Endpoint,
     pub typ: UrbType,
+    pub _reserved: [u8; 3],
 }
 
 impl IocUrb {
@@ -334,19 +321,11 @@ pub enum Work<'a> {
     CancelUrb(UrbHandle),
 }
 
-#[derive(
-    Default,
-    Debug,
-    Clone,
-    Copy,
-    PartialEq,
-    Eq,
-    KnownLayout,
-    Unaligned,
-    Immutable,
-    FromZeros,
-    IntoBytes,
+#[cfg_attr(
+    feature = "zerocopy",
+    derive(IntoBytes, FromZeros, Immutable, KnownLayout, Unaligned)
 )]
+#[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum WorkType {
     #[default]
@@ -355,7 +334,7 @@ pub enum WorkType {
     CancelUrb = USB_VHCI_WORK_TYPE_CANCEL_URB,
 }
 
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Default)]
 #[repr(C)]
 pub struct IocWork {
     pub handle: u64,
@@ -389,6 +368,10 @@ ioctl_readwrite!(
     IocWork
 );
 
+#[cfg_attr(
+    feature = "zerocopy",
+    derive(FromBytes, IntoBytes, KnownLayout, Immutable)
+)]
 #[derive(Clone, Copy, Default)]
 #[repr(C)]
 pub struct IocIsoPacketData {
@@ -425,6 +408,10 @@ ioctl_write_ptr!(
     IocUrbData
 );
 
+#[cfg_attr(
+    feature = "zerocopy",
+    derive(FromBytes, IntoBytes, KnownLayout, Immutable)
+)]
 #[derive(Debug, Clone, Copy, Default)]
 #[repr(C)]
 pub struct IocIsoPacketGiveback {
