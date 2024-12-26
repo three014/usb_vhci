@@ -16,4 +16,4 @@ zerocopy-derive = { version = "0.8.14", optional = true }
 [features]
 default = ["controller"]
 controller = []
-zerocopy = ["dep:zerocopy", "dep:zerocopy-derive", "controller"]
+zerocopy = ["dep:zerocopy", "dep:zerocopy-derive"]
