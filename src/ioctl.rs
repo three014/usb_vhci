@@ -73,6 +73,7 @@ pub enum UrbRequest {
     SetInterface = URB_RQ_SET_INTERFACE,
     SynchFrame = URB_RQ_SYNCH_FRAME,
 }
+
 #[cfg_attr(feature = "zerocopy", derive(Immutable, KnownLayout, TryFromBytes))]
 #[derive(Debug, Clone, Copy, Default)]
 #[repr(C)]
@@ -104,9 +105,10 @@ ioctl_readwrite!(
     USB_VHCI_HCD_IOCREGISTER,
     IocRegister
 );
+
 #[cfg_attr(
     feature = "zerocopy",
-    derive(IntoBytes, TryFromBytes, Immutable, KnownLayout,)
+    derive(IntoBytes, TryFromBytes, Immutable, KnownLayout)
 )]
 #[derive(Clone, Copy, Default)]
 #[repr(C)]

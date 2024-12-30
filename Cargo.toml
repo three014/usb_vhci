@@ -17,3 +17,7 @@ zerocopy-derive = { version = "0.8.14", optional = true }
 default = ["controller"]
 controller = []
 zerocopy = ["dep:zerocopy", "dep:zerocopy-derive"]
+
+[dev-dependencies]
+env_logger = "0.11.6"
+log = "0.4.22"

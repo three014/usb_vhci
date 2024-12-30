@@ -1,6 +1,3 @@
-#[cfg(feature = "zerocopy")]
-use zerocopy_derive::*;
-
 /// Transfer direction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
