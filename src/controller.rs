@@ -8,9 +8,9 @@ use bit_vec::BitVec;
 
 use crate::{
     ioctl,
-    usbfs::Direction,
+    usbfs::Dir,
     utils::{BoundedI16, BoundedU8, TimeoutMillis},
-    DataRate, Port, PortChange, PortStatus, Status, Urb, Work, MAX_ISO_PACKETS,
+    DataRate, Port, PortChange, PortStatus, Status, Urb, MAX_ISO_PACKETS,
 };
 
 static USB_VHCI_DEVICE_FILE: &str = "/dev/usb-vhci";
@@ -25,11 +25,11 @@ impl WorkReceiver {
         Self { dev }
     }
 
-    pub fn fetch_work(&self) -> io::Result<Work> {
+    pub fn fetch_work(&self) -> io::Result<ioctl::IocWork> {
         self.fetch_work_timeout(TimeoutMillis::Time(BoundedI16::new(100).unwrap()))
     }
 
-    pub fn fetch_work_timeout(&self, timeout: TimeoutMillis) -> io::Result<Work> {
+    pub fn fetch_work_timeout(&self, timeout: TimeoutMillis) -> io::Result<ioctl::IocWork> {
         let mut ioc_work = ioctl::IocWork {
             timeout: match timeout {
                 // utils::TimeoutMillis::Unlimited => ioctl::USB_VHCI_TIMEOUT_INFINITE,
@@ -44,7 +44,7 @@ impl WorkReceiver {
         //         ioctl's return type.
         unsafe { ioctl::usb_vhci_fetchwork(self.dev, &raw mut ioc_work).map_err(io::Error::from)? };
 
-        Ok(ioc_work.into())
+        Ok(ioc_work)
     }
 }
 
@@ -58,36 +58,41 @@ impl Remote {
         Self { dev }
     }
 
-    pub fn fetch_data(&self, urb: &mut Urb) -> io::Result<()> {
+    pub fn fetch_data(&self, mut urb: impl Urb) -> io::Result<()> {
+        let buffer_length = urb.transfer_mut().len().try_into().unwrap();
+        let buffer = urb.transfer_mut().as_mut_ptr().cast();
+        let packet_count = urb.iso_packets().len();
         let mut ioc_urb_data = ioctl::IocUrbData {
-            handle: urb.handle().as_raw_handle(),
-            buffer_length: urb.buffer_length() as i32,
-            packet_count: urb.packet_count() as i32,
-            buffer: urb.buffer_mut().as_mut_ptr().cast(),
+            handle: urb.handle().as_raw(),
+            buffer,
+            buffer_length,
+            packet_count: packet_count.try_into().unwrap(),
             ..Default::default()
         };
+        assert!(packet_count <= MAX_ISO_PACKETS);
         let mut ioc_iso_packets = heapless::Vec::<ioctl::IocIsoPacketData, MAX_ISO_PACKETS>::new();
-        assert!(urb.packet_count() <= MAX_ISO_PACKETS);
-        if urb.packet_count() > 0 {
+        ioc_iso_packets.resize_default(packet_count).unwrap();
+        if packet_count > 0 {
             ioc_urb_data.iso_packets = ioc_iso_packets.as_mut_ptr();
         }
 
-        // SAFETY: TODO: We allocate our own buffer for the iso packets,
-        //         and that shouuuuuld last throughout this call?
-        //         After the ioctl call, `iso_packets` should have the
-        //         same len as the buffer in the urb??
+        // SAFETY:
+        // - `ioc_iso_packets` is valid and initialized for the ioctl call
+        // - transfer buffer is initialized and its length does not change
         unsafe {
             ioctl::usb_vhci_fetchdata(self.dev, &raw mut ioc_urb_data).map_err(io::Error::from)?;
-            // Can't forget about the aliasing rule
+
+            // After the ioctl call, we access the iso packet vec,
+            // so we avoid aliasing the data from this struct.
             ioc_urb_data.iso_packets = std::ptr::null_mut();
-            ioc_iso_packets.set_len(urb.packet_count());
         };
 
-        if let Urb::Iso(urb_iso) = urb {
-            for (iso_packet, ioc_iso_packet) in urb_iso.iso_packets.iter_mut().zip(ioc_iso_packets)
+        if urb.kind() == ioctl::UrbType::Iso {
+            for (iso_packet, ioc_iso_packet) in
+                urb.iso_packets_mut().iter_mut().zip(ioc_iso_packets)
             {
                 iso_packet.offset = ioc_iso_packet.offset;
-                iso_packet.packet_length = ioc_iso_packet.packet_length as i32;
+                iso_packet.packet_length = ioc_iso_packet.packet_length;
                 iso_packet.packet_actual = 0;
                 iso_packet.status = Status::Pending;
             }
@@ -96,36 +101,38 @@ impl Remote {
         Ok(())
     }
 
-    pub fn giveback(&self, urb: Urb) -> io::Result<()> {
+    pub fn giveback(&self, mut urb: impl Urb) -> io::Result<()> {
+        let packet_count = urb.iso_packets().len();
         let mut ioc_giveback = ioctl::IocGiveback {
-            handle: urb.handle().as_raw_handle(),
-            status: urb.status_to_errno_raw(),
-            buffer_actual: urb.buffer_actual() as i32,
+            handle: urb.handle().as_raw(),
+            status: urb.status().to_errno_raw(ioctl::UrbType::Iso == urb.kind()),
+            buffer_actual: urb.transfer().len().try_into().unwrap(),
             ..Default::default()
         };
 
+        assert!(packet_count <= MAX_ISO_PACKETS);
         let mut ioc_iso_packets =
             heapless::Vec::<ioctl::IocIsoPacketGiveback, MAX_ISO_PACKETS>::new();
-        assert!(urb.packet_count() <= MAX_ISO_PACKETS);
-        if matches!(urb.epadr().direction(), Direction::In) && ioc_giveback.buffer_actual > 0 {
-            ioc_giveback.buffer = urb.buffer().as_ptr().cast_mut().cast();
-        }
-        if let Urb::Iso(ref urb_iso) = urb {
-            for iso_packet in urb_iso.iso_packets.iter() {
-                ioc_iso_packets
-                    .push(ioctl::IocIsoPacketGiveback {
-                        packet_actual: iso_packet.packet_actual as u32,
-                        status: iso_packet.status.to_errno_raw(true),
-                    })
-                    .expect("URB should not have more than 64 ISO packets");
-            }
-            ioc_giveback.iso_packets = ioc_iso_packets.as_mut_ptr();
-            ioc_giveback.packet_count = urb.packet_count() as i32;
-            ioc_giveback.error_count = urb.error_count();
+        ioc_iso_packets.resize_default(packet_count).unwrap();
+
+        if Dir::In == urb.endpoint().direction() && ioc_giveback.buffer_actual > 0 {
+            ioc_giveback.buffer = urb.transfer_mut().as_mut_ptr().cast();
         }
 
-        // SAFETY: TODO: We allocate our own buffer for the iso packets,
-        //         and that shouuuuuld last throughout this call?
+        if ioctl::UrbType::Iso == urb.kind() {
+            for (iso_packet, ioc_iso_packet) in
+                urb.iso_packets().iter().zip(ioc_iso_packets.iter_mut())
+            {
+                ioc_iso_packet.packet_actual = iso_packet.packet_actual;
+                ioc_iso_packet.status = iso_packet.status.to_errno_raw(true);
+            }
+
+            ioc_giveback.iso_packets = ioc_iso_packets.as_mut_ptr();
+            ioc_giveback.packet_count = packet_count.try_into().unwrap();
+            ioc_giveback.error_count = urb.error_count().into();
+        }
+
+        // SAFETY: All buffers are valid for the ioctl call,
         unsafe {
             match ioctl::usb_vhci_giveback(self.dev, &raw mut ioc_giveback) {
                 Err(nix::Error::ECANCELED) | Ok(_) => Ok(()),
@@ -275,12 +282,12 @@ impl Controller {
         self.work_recv_split = false;
     }
 
-    pub fn fetch_work(&self) -> io::Result<Work> {
+    pub fn fetch_work(&self) -> io::Result<ioctl::IocWork> {
         const DEFAULT_TIMEOUT: TimeoutMillis = TimeoutMillis::Time(BoundedI16::new(100).unwrap());
         self.fetch_work_timeout(DEFAULT_TIMEOUT)
     }
 
-    pub fn fetch_work_timeout(&self, timeout: TimeoutMillis) -> io::Result<Work> {
+    pub fn fetch_work_timeout(&self, timeout: TimeoutMillis) -> io::Result<ioctl::IocWork> {
         if self.work_recv_split {
             Err(io::Error::from(io::ErrorKind::AlreadyExists))?
         } else {
@@ -288,11 +295,11 @@ impl Controller {
         }
     }
 
-    pub fn fetch_data(&self, urb: &mut Urb) -> io::Result<()> {
+    pub fn fetch_data(&self, urb: impl Urb) -> io::Result<()> {
         Remote::new(self.dev.as_raw_fd()).fetch_data(urb)
     }
 
-    pub fn giveback(&self, urb: Urb) -> io::Result<()> {
+    pub fn giveback(&self, urb: impl Urb) -> io::Result<()> {
         Remote::new(self.dev.as_raw_fd()).giveback(urb)
     }
 
@@ -374,7 +381,7 @@ impl Controller {
 mod tests {
     use utils::{BoundedI16, BoundedU8, TimeoutMillis};
 
-    use crate::{utils, PortFlag, PortStat};
+    use crate::{utils, PortFlag};
 
     use super::*;
 
@@ -405,42 +412,36 @@ mod tests {
     fn can_fetch_work() {
         let num_ports = BoundedU8::new(2).unwrap();
         let mut vhci = Controller::open(num_ports).unwrap();
-        let mut prev = PortStat {
-            status: PortStatus::empty(),
-            change: PortChange::empty(),
-            index: Port::new(1).unwrap(),
-            flags: PortFlag::empty(),
-        };
+        let mut prev = ioctl::IocPortStat::default();
+
         let _urb = loop {
             let timeout = TimeoutMillis::Time(BoundedI16::new(500).unwrap());
             let work = vhci.fetch_work_timeout(timeout).unwrap();
-            eprintln!("{work:?}");
-            match work {
-                Work::CancelUrb(_) => unreachable!(),
-                Work::ProcessUrb(urb) => break urb,
-                Work::PortStat(next) => {
-                    if (!prev.status).contains(PortStatus::POWER)
-                        && next.status.contains(PortStatus::POWER)
+            // SAFETY: We don't alter the `typ` field, which
+            //         satisfies the safety constraints
+            match unsafe { work.into_inner() } {
+                ioctl::Work::ProcessUrb((urb, _handle)) => break urb,
+                ioctl::Work::CancelUrb(_handle) => unreachable!(),
+                ioctl::Work::PortStat(next) => {
+                    if (!prev.status()).contains(PortStatus::POWER)
+                        && next.status().contains(PortStatus::POWER)
                     {
-                        vhci.port_connect(next.index, DataRate::Full).unwrap();
-                    } else if (!prev.status).contains(PortStatus::RESET)
+                        vhci.port_connect(next.index(), DataRate::Full).unwrap();
+                    } else if (!prev.status()).contains(PortStatus::RESET)
                         && next
-                            .status
+                            .status()
                             .contains(PortStatus::RESET | PortStatus::CONNECTION)
                     {
-                        vhci.port_reset_done(next.index, true).unwrap();
-                    } else if (!prev.flags).contains(PortFlag::RESUMING)
-                        && next.flags.contains(PortFlag::RESUMING)
-                        && next.status.contains(PortStatus::CONNECTION)
+                        vhci.port_reset_done(next.index(), true).unwrap();
+                    } else if (!prev.flags()).contains(PortFlag::RESUMING)
+                        && next.flags().contains(PortFlag::RESUMING)
+                        && next.status().contains(PortStatus::CONNECTION)
                     {
-                        vhci.port_resumed(next.index).unwrap();
+                        vhci.port_resumed(next.index()).unwrap();
                     }
                     prev = next;
                 }
             }
         };
-
-        vhci.port_disconnect(Port::new(1).unwrap()).unwrap();
-        vhci.port_disconnect(Port::new(2).unwrap()).unwrap();
     }
 }

@@ -9,7 +9,7 @@ use nix::{ioctl_readwrite, ioctl_write_ptr};
 use zerocopy_derive::*;
 
 use crate::{
-    usbfs::{ControlType, Direction, Recipient},
+    usbfs::{CtrlType, Dir, Recipient},
     Port, PortChange, PortFlag, PortStatus,
 };
 
@@ -58,7 +58,7 @@ pub const URB_RQ_SYNCH_FRAME: u8 = 12;
 )]
 #[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
-pub enum UrbRequest {
+pub enum Req {
     /// Needs to use a literal '0' for zerocopy. Equal to [`URB_RQ_GET_STATUS`]
     #[default]
     GetStatus = 0,
@@ -110,7 +110,7 @@ ioctl_readwrite!(
     feature = "zerocopy",
     derive(IntoBytes, TryFromBytes, Immutable, KnownLayout)
 )]
-#[derive(Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default)]
 #[repr(C)]
 pub struct IocPortStat {
     pub status: u16,
@@ -154,31 +154,34 @@ ioctl_write_ptr!(
 #[repr(C)]
 pub struct IocSetupPacket {
     pub bm_request_type: u8,
-    pub b_request: UrbRequest,
+    pub b_request: Req,
     pub w_value: u16,
     pub w_index: u16,
     pub w_length: u16,
 }
 
 impl IocSetupPacket {
+    pub const fn request_type(&self) -> (Dir, CtrlType, Recipient) {
+        (self.direction(), self.control_type(), self.recipient())
+    }
     #[inline(always)]
-    pub const fn request(&self) -> UrbRequest {
+    pub const fn request(&self) -> Req {
         self.b_request
     }
 
     #[inline(always)]
-    pub const fn control_type(&self) -> ControlType {
-        ControlType::from_u8(self.bm_request_type & 0x70).unwrap()
+    pub const fn control_type(&self) -> CtrlType {
+        CtrlType::from_u8((self.bm_request_type & 0x60) >> 5).unwrap()
     }
 
     #[inline(always)]
-    pub const fn direction(&self) -> Direction {
-        Direction::from_u8(self.bm_request_type & 0x80).unwrap()
+    pub const fn direction(&self) -> Dir {
+        Dir::from_u8((self.bm_request_type & 0x80) >> 7).unwrap()
     }
 
     #[inline(always)]
     pub const fn recipient(&self) -> Recipient {
-        Recipient::from_u8(self.bm_request_type & 0xF).unwrap()
+        Recipient::from_u8(self.bm_request_type & 0x1F).unwrap()
     }
 
     #[inline(always)]
@@ -237,28 +240,15 @@ impl Address {
 pub struct Endpoint(pub u8);
 
 impl Endpoint {
-    pub const fn direction(&self) -> Direction {
-        Direction::from_u8(self.0 & 0x80).unwrap()
+    pub const fn direction(&self) -> Dir {
+        Dir::from_u8((self.0 & 0x80) >> 7).unwrap()
     }
-}
 
-pub struct Iso<'a>(&'a IocUrb);
-pub struct Int<'a>(&'a IocUrb);
-pub struct Ctrl<'a>(&'a IocUrb);
-
-impl Ctrl<'_> {
-    pub const fn setup_packet(&self) -> &IocSetupPacket {
-        &self.0.setup_packet
+    /// Returns whether the endpoint should be
+    /// sent to all devices.
+    pub const fn is_broadcast(&self) -> bool {
+        self.0 & 0x7f == 0
     }
-}
-
-pub struct Bulk<'a>(&'a IocUrb);
-
-pub enum Urb<'a> {
-    Iso(Iso<'a>),
-    Int(Int<'a>),
-    Ctrl(Ctrl<'a>),
-    Bulk(Bulk<'a>),
 }
 
 #[cfg_attr(
@@ -279,25 +269,6 @@ pub struct IocUrb {
     pub _reserved: [u8; 3],
 }
 
-impl IocUrb {
-    /// Unlike [`IocWork::get`], this struct
-    /// contains no union data. With all data
-    /// being initialized before use, this function
-    /// is marked safe.
-    ///
-    /// However, incorrect behavior can still occur
-    /// if `IocUrb::typ` does not match the data
-    /// given to this struct.
-    pub fn get(&self) -> Urb<'_> {
-        match self.typ {
-            UrbType::Iso => Urb::Iso(Iso(self)),
-            UrbType::Int => Urb::Int(Int(self)),
-            UrbType::Ctrl => Urb::Ctrl(Ctrl(self)),
-            UrbType::Bulk => Urb::Bulk(Bulk(self)),
-        }
-    }
-}
-
 #[derive(Clone, Copy)]
 #[repr(C)]
 pub union IocWorkUnion {
@@ -313,13 +284,21 @@ impl Default for IocWorkUnion {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct UrbHandle(pub u64);
 
+impl UrbHandle {
+    pub const fn as_raw(&self) -> u64 {
+        self.0
+    }
+}
+
+impl nohash_hasher::IsEnabled for UrbHandle {}
+
 #[derive(Clone)]
-pub enum Work<'a> {
-    PortStat(&'a IocPortStat),
-    ProcessUrb(&'a IocUrb),
+pub enum Work {
+    PortStat(IocPortStat),
+    ProcessUrb((IocUrb, UrbHandle)),
     CancelUrb(UrbHandle),
 }
 
@@ -343,6 +322,7 @@ pub struct IocWork {
     pub work: IocWorkUnion,
     pub timeout: i16,
     pub typ: WorkType,
+    pub _padding: [u8; 1],
 }
 
 impl IocWork {
@@ -353,11 +333,13 @@ impl IocWork {
     ///
     /// If this work item was returned from an ioctl call, then
     /// the above will always be true.
-    pub const unsafe fn get(&self) -> Work {
+    pub const unsafe fn into_inner(self) -> Work {
         // SAFETY: Caller upholds safety contract in function description.
         match self.typ {
-            WorkType::PortStat => Work::PortStat(unsafe { &self.work.port }),
-            WorkType::ProcessUrb => Work::ProcessUrb(unsafe { &self.work.urb }),
+            WorkType::PortStat => Work::PortStat(unsafe { self.work.port }),
+            WorkType::ProcessUrb => {
+                Work::ProcessUrb((unsafe { self.work.urb }, UrbHandle(self.handle)))
+            }
             WorkType::CancelUrb => Work::CancelUrb(UrbHandle(self.handle)),
         }
     }

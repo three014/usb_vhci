@@ -1,6 +1,8 @@
+use std::mem::MaybeUninit;
+
 use bitflags::bitflags;
 use ioctl::{Address, Endpoint};
-use usbfs::Direction;
+use usbfs::Dir;
 use utils::BoundedU8;
 
 #[cfg(feature = "zerocopy")]
@@ -122,202 +124,204 @@ bitflags! {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[repr(transparent)]
-pub struct UrbHandle(pub u64);
+pub trait Urb {
+    fn kind(&self) -> ioctl::UrbType;
+    fn handle(&self) -> ioctl::UrbHandle;
+    fn transfer(&self) -> &[u8];
+    fn transfer_mut(&mut self) -> &mut [u8];
+    fn iso_packets(&self) -> &[IsoPacket];
+    fn iso_packets_mut(&mut self) -> &mut [IsoPacket];
+    fn status(&self) -> Status;
+    fn error_count(&self) -> u16;
+    fn endpoint(&self) -> Endpoint;
+}
 
-impl nohash_hasher::IsEnabled for UrbHandle {}
+impl<T> Urb for &mut T
+where
+    T: Urb + ?Sized,
+{
+    fn kind(&self) -> ioctl::UrbType {
+        T::kind(self)
+    }
 
-impl UrbHandle {
-    pub(crate) fn as_raw_handle(&self) -> u64 {
-        self.0
+    fn handle(&self) -> ioctl::UrbHandle {
+        T::handle(self)
+    }
+
+    fn transfer(&self) -> &[u8] {
+        T::transfer(self)
+    }
+
+    fn transfer_mut(&mut self) -> &mut [u8] {
+        T::transfer_mut(self)
+    }
+
+    fn iso_packets(&self) -> &[IsoPacket] {
+        T::iso_packets(self)
+    }
+
+    fn iso_packets_mut(&mut self) -> &mut [IsoPacket] {
+        T::iso_packets_mut(self)
+    }
+
+    fn status(&self) -> Status {
+        T::status(self)
+    }
+
+    fn error_count(&self) -> u16 {
+        T::error_count(self)
+    }
+
+    fn endpoint(&self) -> Endpoint {
+        T::endpoint(self)
     }
 }
 
 #[derive(Default, Debug, Clone)]
 pub struct IsoPacket {
     offset: u32,
-    packet_length: i32,
-    packet_actual: i32,
+    packet_length: u32,
+    packet_actual: u32,
     status: Status,
 }
 
-#[derive(Debug, Clone)]
-pub struct UrbIso {
-    status: Status,
-    handle: UrbHandle,
-    /// buffer length is the actual length for iso urbs
-    buffer: Box<[u8]>,
+pub struct UrbWithData {
+    transfer: Vec<u8>,
+    urb: ioctl::IocUrb,
     iso_packets: Box<[IsoPacket]>,
-    error_count: i32,
-    /// address
-    devadr: Address,
-    /// endpoint
-    epadr: Endpoint,
-    asap: bool,
-    interval: i32,
-}
-
-#[derive(Debug, Clone)]
-pub struct UrbInt {
+    handle: ioctl::UrbHandle,
     status: Status,
-    handle: UrbHandle,
-    buffer: Vec<u8>,
-    devadr: Address,
-    epadr: Endpoint,
-    short_not_ok: bool,
-    interval: i32,
+    num_errors: u16,
 }
 
-#[derive(Debug, Clone)]
-pub struct UrbControl {
-    status: Status,
-    handle: UrbHandle,
-    buffer: Vec<u8>,
-    pub devadr: Address,
-    pub epadr: Endpoint,
-    pub w_value: u16,
-    pub w_index: u16,
-    pub w_length: u16,
-    pub bm_request_type: u8,
-    pub b_request: ioctl::UrbRequest,
-}
-
-#[derive(Debug, Clone)]
-pub struct UrbBulk {
-    status: Status,
-    handle: UrbHandle,
-    buffer: Vec<u8>,
-    devadr: Address,
-    epadr: Endpoint,
-    send_zero_packet: bool,
-}
-
-#[derive(Debug)]
-pub enum Urb {
-    Iso(UrbIso),
-    Int(UrbInt),
-    Ctrl(UrbControl),
-    Bulk(UrbBulk),
-}
-
-impl Urb {
-    pub const fn direction(&self) -> Direction {
-        match self {
-            Urb::Iso(urb_iso) => urb_iso.epadr.direction(),
-            Urb::Int(urb_int) => urb_int.epadr.direction(),
-            Urb::Ctrl(urb_control) => urb_control.epadr.direction(),
-            Urb::Bulk(urb_bulk) => urb_bulk.epadr.direction(),
-        }
+impl UrbWithData {
+    pub const fn kind(&self) -> ioctl::UrbType {
+        self.urb.typ
     }
 
-    pub const fn handle(&self) -> UrbHandle {
-        match self {
-            Urb::Iso(urb_iso) => urb_iso.handle,
-            Urb::Int(urb_int) => urb_int.handle,
-            Urb::Ctrl(urb_control) => urb_control.handle,
-            Urb::Bulk(urb_bulk) => urb_bulk.handle,
-        }
+    pub const fn handle(&self) -> ioctl::UrbHandle {
+        self.handle
     }
 
-    /// The buffer's capacity (I know)
-    ///
-    /// The actual length of the buffer is found
-    /// with [`Urb::buffer_actual`]
-    pub fn buffer_length(&self) -> usize {
-        match self {
-            Urb::Iso(urb_iso) => urb_iso.buffer.len(),
-            Urb::Int(urb_int) => urb_int.buffer.capacity(),
-            Urb::Ctrl(urb_control) => urb_control.buffer.capacity(),
-            Urb::Bulk(urb_bulk) => urb_bulk.buffer.capacity(),
-        }
+    pub fn transfer_mut(&mut self) -> &mut [u8] {
+        &mut self.transfer[..]
     }
 
-    pub fn buffer_actual(&self) -> usize {
-        match self {
-            Urb::Iso(urb_iso) => urb_iso.buffer.len(),
-            Urb::Int(urb_int) => urb_int.buffer.len(),
-            Urb::Ctrl(urb_control) => urb_control.buffer.len(),
-            Urb::Bulk(urb_bulk) => urb_bulk.buffer.len(),
-        }
+    pub fn transfer(&self) -> &[u8] {
+        &self.transfer[..]
     }
 
-    pub fn packet_count(&self) -> usize {
-        match self {
-            Urb::Iso(urb_iso) => urb_iso.iso_packets.len(),
-            _ => 0,
-        }
+    pub fn iso_packets_mut(&mut self) -> &mut [IsoPacket] {
+        &mut self.iso_packets[..]
     }
 
-    pub fn requires_fetch_data(&self) -> bool {
-        match self {
-            Urb::Iso(urb_iso) => !urb_iso.iso_packets.is_empty(),
-            Urb::Int(urb_int) => !urb_int.buffer.is_empty(),
-            Urb::Ctrl(urb_control) => !urb_control.buffer.is_empty(),
-            Urb::Bulk(urb_bulk) => !urb_bulk.buffer.is_empty(),
-        }
-    }
-
-    pub fn buffer(&self) -> &[u8] {
-        match self {
-            Urb::Iso(urb_iso) => &urb_iso.buffer,
-            Urb::Int(urb_int) => &urb_int.buffer,
-            Urb::Ctrl(urb_control) => &urb_control.buffer,
-            Urb::Bulk(urb_bulk) => &urb_bulk.buffer,
-        }
-    }
-
-    pub fn buffer_mut(&mut self) -> &mut [u8] {
-        match self {
-            Urb::Iso(urb_iso) => &mut urb_iso.buffer,
-            Urb::Int(urb_int) => &mut urb_int.buffer,
-            Urb::Ctrl(urb_control) => &mut urb_control.buffer,
-            Urb::Bulk(urb_bulk) => &mut urb_bulk.buffer,
-        }
-    }
-
-    pub const fn devadr(&self) -> Address {
-        match self {
-            Urb::Iso(urb_iso) => urb_iso.devadr,
-            Urb::Int(urb_int) => urb_int.devadr,
-            Urb::Ctrl(urb_control) => urb_control.devadr,
-            Urb::Bulk(urb_bulk) => urb_bulk.devadr,
-        }
+    pub fn iso_packets(&self) -> &[IsoPacket] {
+        &self.iso_packets[..]
     }
 
     pub const fn status_to_errno_raw(&self) -> i32 {
-        let (status, is_iso) = match self {
-            Urb::Iso(urb_iso) => (urb_iso.status, true),
-            Urb::Int(urb_int) => (urb_int.status, false),
-            Urb::Ctrl(urb_control) => (urb_control.status, false),
-            Urb::Bulk(urb_bulk) => (urb_bulk.status, false),
+        let is_iso = matches!(self.urb.typ, ioctl::UrbType::Iso);
+        self.status.to_errno_raw(is_iso)
+    }
+
+    pub fn available_transfer_mut(&mut self) -> &mut [MaybeUninit<u8>] {
+        self.transfer.spare_capacity_mut()
+    }
+
+    pub const fn endpoint(&self) -> ioctl::Endpoint {
+        self.urb.endpoint
+    }
+
+    pub const fn error_count(&self) -> u16 {
+        self.num_errors
+    }
+
+    pub fn needs_data_fetch(&self) -> bool {
+        self.transfer().len() > 0 || self.iso_packets().len() > 0
+    }
+
+    pub const fn control_packet(&self) -> &ioctl::IocSetupPacket {
+        &self.urb.setup_packet
+    }
+
+    /// Updates the transfer buffer by setting its length
+    /// to the current length plus the number of bytes written to
+    /// the uninitialized portion.
+    ///
+    /// The uninitialized portion can be obtained using [`UrbWithData::available_transfer_mut`].
+    ///
+    /// # Safety
+    ///
+    /// The caller must make sure that `bytes_written_to_uninit` matches
+    /// what was written to the uninitialized portion of the buffer.
+    ///
+    /// All of the other constraints from [`Vec::set_len`] apply as well.
+    pub unsafe fn update_transfer_len(&mut self, bytes_written_to_uninit: usize) {
+        self.transfer
+            .set_len(self.transfer.len() + bytes_written_to_uninit);
+    }
+
+    pub fn from_ioctl(urb: ioctl::IocUrb, handle: ioctl::UrbHandle) -> Self {
+        let iso_packets =
+            vec![IsoPacket::default(); urb.packet_count.try_into().unwrap()].into_boxed_slice();
+        let transfer = match urb.typ {
+            ioctl::UrbType::Iso | _ if Dir::Out == urb.endpoint.direction() => {
+                vec![0; urb.buffer_length.try_into().unwrap()]
+            }
+            _ => Vec::with_capacity(urb.buffer_length.try_into().unwrap()),
         };
-        status.to_errno_raw(is_iso)
-    }
 
-    pub const fn epadr(&self) -> Endpoint {
-        match self {
-            Urb::Iso(urb_iso) => urb_iso.epadr,
-            Urb::Int(urb_int) => urb_int.epadr,
-            Urb::Ctrl(urb_control) => urb_control.epadr,
-            Urb::Bulk(urb_bulk) => urb_bulk.epadr,
+        Self {
+            iso_packets,
+            transfer,
+            urb,
+            handle,
+            status: Status::Pending,
+            num_errors: 0,
         }
     }
 
-    pub const fn error_count(&self) -> i32 {
-        match self {
-            Urb::Iso(urb_iso) => urb_iso.error_count,
-            _ => 0,
-        }
+    pub fn set_status(&mut self, new_status: Status) {
+        self.status = new_status;
     }
 }
 
-pub struct UrbExtended {
-    urb: ioctl::IocUrb,
-    status: Status,
-    num_errors: i32,
-    iso_packets: Vec<IsoPacket>,
-    transfer: Vec<u8>,
+impl Urb for UrbWithData {
+    fn kind(&self) -> ioctl::UrbType {
+        self.kind()
+    }
+
+    fn handle(&self) -> ioctl::UrbHandle {
+        self.handle()
+    }
+
+    fn transfer(&self) -> &[u8] {
+        self.transfer()
+    }
+
+    fn transfer_mut(&mut self) -> &mut [u8] {
+        self.transfer_mut()
+    }
+
+    fn iso_packets(&self) -> &[IsoPacket] {
+        self.iso_packets()
+    }
+
+    fn iso_packets_mut(&mut self) -> &mut [IsoPacket] {
+        self.iso_packets_mut()
+    }
+
+    fn status(&self) -> Status {
+        self.status
+    }
+
+    fn error_count(&self) -> u16 {
+        self.error_count()
+    }
+
+    fn endpoint(&self) -> Endpoint {
+        self.endpoint()
+    }
 }
 
 bitflags::bitflags! {
@@ -355,146 +359,8 @@ bitflags::bitflags! {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct PortStat {
-    pub status: PortStatus,
-    pub change: PortChange,
-    pub index: Port,
-    pub flags: PortFlag,
-}
-
-#[derive(Debug, Clone, Copy)]
 pub enum DataRate {
     Full = 0,
     Low = 1,
     High = 2,
-}
-
-#[derive(Debug)]
-pub enum Work {
-    /// URB was cancelled and
-    /// given back to its creator.
-    CancelUrb(UrbHandle),
-
-    /// Creator of URB wants data.
-    /// When finished, giveback modified/new URB.
-    ProcessUrb(Urb),
-
-    /// Information about a port.
-    PortStat(PortStat),
-}
-
-impl From<ioctl::IocPortStat> for PortStat {
-    fn from(port_stat: ioctl::IocPortStat) -> Self {
-        Self {
-            status: PortStatus::from_bits(port_stat.status).unwrap(),
-            change: PortChange::from_bits(port_stat.change).unwrap(),
-            index: Port::new(port_stat.index).unwrap(),
-            flags: PortFlag::from_bits_retain(port_stat.flags),
-        }
-    }
-}
-
-impl From<ioctl::IocWork> for Work {
-    fn from(ioc_work: ioctl::IocWork) -> Self {
-        match ioc_work.typ {
-            ioctl::WorkType::PortStat => {
-                // SAFETY: The ioctl always tells us what type was written
-                //         through the "typ" parameter, so we can safely
-                //         use this variant.
-                Work::PortStat(unsafe { ioc_work.work.port.into() })
-            }
-            ioctl::WorkType::ProcessUrb => {
-                // SAFETY: The ioctl always tells us what type was written
-                //         through the "typ" parameter, so we can safely
-                //         use this variant.
-                let ioc_urb = unsafe { ioc_work.work.urb };
-                let urb = match ioc_urb.typ {
-                    ioctl::UrbType::Iso => Urb::Iso(UrbIso {
-                        status: Status::Pending,
-                        handle: UrbHandle(ioc_work.handle),
-                        buffer: vec![0; ioc_urb.buffer_length.try_into().unwrap()]
-                            .into_boxed_slice(),
-                        error_count: 0,
-                        devadr: ioc_urb.address,
-                        epadr: ioc_urb.endpoint.into(),
-                        iso_packets: vec![
-                            IsoPacket::default();
-                            ioc_urb.packet_count.try_into().unwrap()
-                        ]
-                        .into_boxed_slice(),
-                        asap: UrbFlags::from_bits_retain(ioc_urb.flags)
-                            .contains(UrbFlags::ISO_ASAP),
-                        interval: ioc_urb.interval,
-                    }),
-                    ioctl::UrbType::Int => Urb::Int(UrbInt {
-                        status: Status::Pending,
-                        handle: UrbHandle(ioc_work.handle),
-                        buffer: {
-                            let mut buf = Vec::new();
-                            buf.reserve_exact(ioc_urb.buffer_length.try_into().unwrap());
-                            let actual_len =
-                                if matches!(ioc_urb.endpoint.direction(), Direction::Out) {
-                                    ioc_urb.buffer_length
-                                } else {
-                                    0
-                                };
-                            buf.resize(actual_len.try_into().unwrap(), 0);
-                            buf
-                        },
-                        devadr: ioc_urb.address,
-                        epadr: ioc_urb.endpoint.into(),
-                        short_not_ok: UrbFlags::from_bits_retain(ioc_urb.flags)
-                            .contains(UrbFlags::SHORT_NOT_OK),
-                        interval: ioc_urb.interval,
-                    }),
-                    ioctl::UrbType::Ctrl => Urb::Ctrl(UrbControl {
-                        status: Status::Pending,
-                        handle: UrbHandle(ioc_work.handle),
-                        buffer: {
-                            let mut buf = Vec::new();
-                            buf.reserve_exact(ioc_urb.buffer_length.try_into().unwrap());
-                            let actual_len =
-                                if matches!(ioc_urb.endpoint.direction(), Direction::Out) {
-                                    ioc_urb.buffer_length
-                                } else {
-                                    0
-                                };
-                            buf.resize(actual_len.try_into().unwrap(), 0);
-                            buf
-                        },
-                        devadr: ioc_urb.address,
-                        epadr: ioc_urb.endpoint.into(),
-                        w_value: ioc_urb.setup_packet.w_value,
-                        w_index: ioc_urb.setup_packet.w_index,
-                        w_length: ioc_urb.setup_packet.w_length,
-                        bm_request_type: ioc_urb.setup_packet.bm_request_type,
-                        b_request: ioc_urb.setup_packet.b_request,
-                    }),
-                    ioctl::UrbType::Bulk => Urb::Bulk(UrbBulk {
-                        status: Status::Pending,
-                        handle: UrbHandle(ioc_work.handle),
-                        buffer: {
-                            let mut buf = Vec::new();
-                            buf.reserve_exact(ioc_urb.buffer_length.try_into().unwrap());
-                            let actual_len =
-                                if matches!(ioc_urb.endpoint.direction(), Direction::Out) {
-                                    ioc_urb.buffer_length
-                                } else {
-                                    0
-                                };
-                            buf.resize(actual_len.try_into().unwrap(), 0);
-                            buf
-                        },
-                        devadr: ioc_urb.address,
-                        epadr: ioc_urb.endpoint.into(),
-                        send_zero_packet: UrbFlags::from_bits_retain(ioc_urb.flags)
-                            .contains(UrbFlags::ZERO_PACKET),
-                    }),
-                };
-
-                Work::ProcessUrb(urb)
-            }
-            ioctl::WorkType::CancelUrb => Work::CancelUrb(UrbHandle(ioc_work.handle)),
-        }
-    }
 }

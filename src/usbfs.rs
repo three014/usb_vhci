@@ -1,7 +1,7 @@
 /// Transfer direction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
-pub enum Direction {
+pub enum Dir {
     /// Host to device.
     Out = 0,
 
@@ -9,11 +9,11 @@ pub enum Direction {
     In = 1,
 }
 
-impl Direction {
+impl Dir {
     pub const fn from_u8(num: u8) -> Option<Self> {
         match num {
-            0 => Some(Direction::Out),
-            1 => Some(Direction::In),
+            0 => Some(Dir::Out),
+            1 => Some(Dir::In),
             _ => None,
         }
     }
@@ -22,7 +22,7 @@ impl Direction {
 /// Specification defining the request
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
-pub enum ControlType {
+pub enum CtrlType {
     /// Request defined by the USB standard.
     Standard = 0,
 
@@ -33,7 +33,7 @@ pub enum ControlType {
     Vendor = 2,
 }
 
-impl ControlType {
+impl CtrlType {
     pub const fn from_u8(num: u8) -> Option<Self> {
         match num {
             0 => Some(Self::Standard),
