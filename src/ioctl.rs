@@ -195,36 +195,36 @@ pub enum UrbType {
 
 #[cfg_attr(
     feature = "zerocopy",
-    derive(IntoBytes, FromBytes, Immutable, KnownLayout, Unaligned)
+    derive(FromBytes, IntoBytes, Immutable, KnownLayout)
 )]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(transparent)]
-pub struct Address(BoundedU8<0, 128>);
+pub struct Address(u8);
 
 impl Address {
     /// Returns whether the address is meant for
     /// any USB device that does not already have
     /// an assigned address.
     pub const fn is_anycast(&self) -> bool {
-        (self.0.get() & 0x7F) == 0
+        (self.0 & 0x7F) == 0
     }
 
     pub const fn new(addr: u8) -> Option<Self> {
-        if let Some(val) = BoundedU8::new(addr) {
-            Some(Self(val))
+        if let Some(val) = BoundedU8::<0, 128>::new(addr) {
+            Some(Self(val.get()))
         } else {
             None
         }
     }
 
     pub const fn get(&self) -> u8 {
-        self.0.get()
+        self.0
     }
 }
 
 impl Default for Address {
     fn default() -> Self {
-        Self(BoundedU8::new(0).unwrap())
+        Self(0)
     }
 }
 

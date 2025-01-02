@@ -1,5 +1,8 @@
 use std::time::Duration;
 
+#[cfg(feature = "zerocopy")]
+use zerocopy_derive::*;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TimeoutMillis {
     // Unlimited, TODO: Find out why this times out immediately?
@@ -17,6 +20,10 @@ impl TimeoutMillis {
     }
 }
 
+#[cfg_attr(
+    feature = "zerocopy",
+    derive(IntoBytes, Immutable, KnownLayout, Unaligned)
+)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(transparent)]
 pub struct BoundedU8<const LOWER_INC: u8, const UPPER_EX: u8>(u8);
