@@ -295,6 +295,12 @@ impl UrbHandle {
 
 impl nohash_hasher::IsEnabled for UrbHandle {}
 
+pub enum WorkRef<'a> {
+    PortStat(IocPortStat),
+    ProcessUrb((&'a IocUrb, UrbHandle)),
+    CancelUrb(UrbHandle),
+}
+
 #[derive(Clone)]
 pub enum Work {
     PortStat(IocPortStat),
@@ -341,6 +347,23 @@ impl IocWork {
                 Work::ProcessUrb((unsafe { self.work.urb }, UrbHandle(self.handle)))
             }
             WorkType::CancelUrb => Work::CancelUrb(UrbHandle(self.handle)),
+        }
+    }
+    /// # Safety
+    ///
+    /// The caller must make sure that `IocWork::work` is the
+    /// same type as what's specified in `IocWork::typ`.
+    ///
+    /// If this work item was returned from an ioctl call, then
+    /// the above will always be true.
+    pub const fn get(&self) -> WorkRef {
+        // SAFETY: Caller upholds safety contract in function description.
+        match self.typ {
+            WorkType::PortStat => WorkRef::PortStat(unsafe { self.work.port }),
+            WorkType::ProcessUrb => {
+                WorkRef::ProcessUrb((unsafe { &self.work.urb }, UrbHandle(self.handle)))
+            }
+            WorkType::CancelUrb => WorkRef::CancelUrb(UrbHandle(self.handle)),
         }
     }
 }
