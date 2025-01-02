@@ -63,7 +63,7 @@ impl Remote {
         let buffer = urb.transfer_mut().as_mut_ptr().cast();
         let packet_count = urb.iso_packets().len();
         let mut ioc_urb_data = ioctl::IocUrbData {
-            handle: urb.handle().as_raw(),
+            handle: urb.handle().get(),
             buffer,
             buffer_length,
             packet_count: packet_count.try_into().unwrap(),
@@ -104,7 +104,7 @@ impl Remote {
     pub fn giveback(&self, mut urb: impl Urb) -> io::Result<()> {
         let packet_count = urb.iso_packets().len();
         let mut ioc_giveback = ioctl::IocGiveback {
-            handle: urb.handle().as_raw(),
+            handle: urb.handle().get(),
             status: urb.status().to_errno_raw(ioctl::UrbType::Iso == urb.kind()),
             buffer_actual: urb.transfer().len().try_into().unwrap(),
             ..Default::default()

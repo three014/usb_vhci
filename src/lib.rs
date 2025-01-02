@@ -1,7 +1,6 @@
 use std::mem::MaybeUninit;
 
 use bitflags::bitflags;
-use ioctl::{Address, Endpoint};
 use usbfs::Dir;
 use utils::BoundedU8;
 
@@ -133,7 +132,7 @@ pub trait Urb {
     fn iso_packets_mut(&mut self) -> &mut [IsoPacket];
     fn status(&self) -> Status;
     fn error_count(&self) -> u16;
-    fn endpoint(&self) -> Endpoint;
+    fn endpoint(&self) -> ioctl::Endpoint;
 }
 
 impl<T> Urb for &mut T
@@ -172,7 +171,7 @@ where
         T::error_count(self)
     }
 
-    fn endpoint(&self) -> Endpoint {
+    fn endpoint(&self) -> ioctl::Endpoint {
         T::endpoint(self)
     }
 }
@@ -319,7 +318,7 @@ impl Urb for UrbWithData {
         self.error_count()
     }
 
-    fn endpoint(&self) -> Endpoint {
+    fn endpoint(&self) -> ioctl::Endpoint {
         self.endpoint()
     }
 }

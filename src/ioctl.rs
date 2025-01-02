@@ -53,7 +53,7 @@ pub const URB_RQ_GET_INTERFACE: u8 = 10;
 pub const URB_RQ_SET_INTERFACE: u8 = 11;
 pub const URB_RQ_SYNCH_FRAME: u8 = 12;
 
-#[cfg_attr(feature = "zerocopy", derive(Immutable, KnownLayout, TryFromBytes))]
+#[cfg_attr(feature = "zerocopy", derive(Immutable, KnownLayout, TryFromBytes, IntoBytes))]
 #[derive(Debug, Clone, Copy, Default)]
 #[repr(C)]
 pub struct IocRegister {
@@ -61,6 +61,7 @@ pub struct IocRegister {
     pub usb_busnum: i32,
     pub bus_id: [u8; 20],
     pub port_count: u8,
+    pub _padding: [u8; 3]
 }
 
 impl IocRegister {
@@ -70,6 +71,7 @@ impl IocRegister {
             usb_busnum: 0,
             bus_id: [0; 20],
             port_count: num_ports,
+            _padding: [0; 3]
         }
     }
 
@@ -195,9 +197,9 @@ pub enum UrbType {
 
 #[cfg_attr(
     feature = "zerocopy",
-    derive(FromBytes, IntoBytes, Immutable, KnownLayout)
+    derive(FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned)
 )]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(transparent)]
 pub struct Address(u8);
 
@@ -205,7 +207,7 @@ impl Address {
     /// Returns whether the address is meant for
     /// any USB device that does not already have
     /// an assigned address.
-    pub const fn is_anycast(&self) -> bool {
+    pub const fn is_for_unassigned(&self) -> bool {
         (self.0 & 0x7F) == 0
     }
 
@@ -222,17 +224,11 @@ impl Address {
     }
 }
 
-impl Default for Address {
-    fn default() -> Self {
-        Self(0)
-    }
-}
-
 #[cfg_attr(
     feature = "zerocopy",
     derive(IntoBytes, FromBytes, Immutable, KnownLayout, Unaligned)
 )]
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(transparent)]
 pub struct Endpoint(pub u8);
 
@@ -243,7 +239,7 @@ impl Endpoint {
 
     /// Returns whether the endpoint should be
     /// sent to all devices.
-    pub const fn is_broadcast(&self) -> bool {
+    pub const fn is_anycast(&self) -> bool {
         self.0 & 0x7f == 0
     }
 }
@@ -285,7 +281,7 @@ impl Default for IocWorkUnion {
 pub struct UrbHandle(pub u64);
 
 impl UrbHandle {
-    pub const fn as_raw(&self) -> u64 {
+    pub const fn get(&self) -> u64 {
         self.0
     }
 }

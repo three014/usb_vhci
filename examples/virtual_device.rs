@@ -71,7 +71,7 @@ fn process_urb(urb: &mut UrbWithData) {
         trace!("not CONTROL");
         return;
     }
-    if !urb.endpoint().is_broadcast() {
+    if !urb.endpoint().is_anycast() {
         trace!("not endpoint 0");
         urb.set_status(Status::Stall);
         return;
@@ -273,7 +273,7 @@ fn main() {
                     urb.control_packet().request(),
                 );
                 if ioctl::UrbType::Ctrl == urb.kind()
-                    && urb.endpoint().is_broadcast()
+                    && urb.endpoint().is_anycast()
                     && STANDARD_DEVICE_SET_ADDRESS == urb_ctrl_req
                 {
                     if let Some(adr) =
