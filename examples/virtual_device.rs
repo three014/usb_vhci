@@ -1,14 +1,18 @@
 use std::{
+    collections::HashMap,
     io,
     time::{Duration, Instant},
 };
 
 use log::{debug, trace};
 use usb_vhci::{
-    ioctl::{self, Req},
-    usbfs::{self, CtrlType, Dir, Recipient},
+    ioctl::{self, Address},
+    usbfs::{
+        DescriptorType, STANDARD_DEVICE_GET_DESCRIPTOR, STANDARD_DEVICE_SET_ADDRESS,
+        STANDARD_DEVICE_SET_CONFIGURATION, STANDARD_INTERFACE_SET_INTERFACE,
+    },
     utils::{BoundedU8, TimeoutMillis},
-    Controller, DataRate, PortChange, PortFlag, PortStatus, Status, UrbWithData,
+    Controller, DataRate, Port, PortChange, PortFlag, PortStatus, Status, UrbWithData,
 };
 
 static DEV_DESC: &[u8] = &[
@@ -76,99 +80,94 @@ fn process_urb(urb: &mut UrbWithData) {
     let control_packet = urb.control_packet();
     let request_type = control_packet.request_type();
     let request = control_packet.request();
+    let desc = DescriptorType::from_u8((control_packet.value() >> 8) as u8);
 
     match (request_type, request) {
-        ((Dir::Out, CtrlType::Standard, Recipient::Device), Req::SetConfiguration) => {
+        STANDARD_DEVICE_SET_CONFIGURATION => {
             trace!("SET_CONFIGURATION");
             urb.set_status(Status::Success);
         }
-        ((Dir::Out, CtrlType::Standard, Recipient::Device), Req::SetInterface) => {
+        STANDARD_INTERFACE_SET_INTERFACE => {
             trace!("SET_INTERFACE");
             urb.set_status(Status::Success);
         }
-        ((Dir::In, CtrlType::Standard, Recipient::Device), Req::GetDescriptor) => {
+        STANDARD_DEVICE_GET_DESCRIPTOR if desc.is_some_and(|typ| DescriptorType::Device == typ) => {
             trace!("GET_DESCRIPTOR");
-            match control_packet.value() >> 8 {
-                1 => {
-                    trace!("DEVICE_DESCRIPTOR");
-                    let length =
-                        std::cmp::min(DEV_DESC[0] as usize, control_packet.length() as usize);
-                    let new_len = urb
-                        .available_transfer_mut()
-                        .iter_mut()
-                        .zip(&DEV_DESC[..length])
-                        .fold(0, |acc, (left, &right)| {
-                            left.write(right);
-                            acc + 1
-                        });
-                    // SAFETY: Wrote less than the number of bytes remaining
-                    //         in the buffer.
-                    unsafe { urb.update_transfer_len(new_len) };
-                    urb.set_status(Status::Success);
-                }
-                2 => {
-                    trace!("CONFIGURATION_DESCRIPTOR");
-                    let length = dbg!(std::cmp::min(
-                        CONF_DESC[0] as usize + CONF_DESC[9] as usize,
-                        control_packet.length() as usize
-                    ));
-                    let new_len = urb
-                        .available_transfer_mut()
-                        .iter_mut()
-                        .zip(&CONF_DESC[..length])
-                        .fold(0, |acc, (left, &right)| {
-                            left.write(right);
-                            acc + 1
-                        });
-                    // SAFETY: Wrote less than the number of bytes remaining
-                    //         in the buffer.
-                    unsafe { urb.update_transfer_len(new_len) };
-                    urb.set_status(Status::Success);
-                }
-                3 => {
-                    trace!("STRING_DESCRIPTOR");
-                    match control_packet.value() & 0xff {
-                        0 => {
-                            let length = std::cmp::min(
-                                STR0_DESC[0] as usize,
-                                control_packet.length() as usize,
-                            );
-                            let new_len = urb
-                                .available_transfer_mut()
-                                .iter_mut()
-                                .zip(&STR0_DESC[..length])
-                                .fold(0, |acc, (left, &right)| {
-                                    left.write(right);
-                                    acc + 1
-                                });
-                            // SAFETY: Wrote less than the number of bytes remaining
-                            //         in the buffer.
-                            unsafe { urb.update_transfer_len(new_len) };
-                            urb.set_status(Status::Success);
-                        }
-                        1 => {
-                            let length = std::cmp::min(
-                                STR1_DESC[0] as usize,
-                                control_packet.length() as usize,
-                            );
-                            let new_len = urb
-                                .available_transfer_mut()
-                                .iter_mut()
-                                .zip(&STR1_DESC[..length])
-                                .fold(0, |acc, (left, &right)| {
-                                    left.write(right);
-                                    acc + 1
-                                });
-                            // SAFETY: Wrote less than the number of bytes remaining
-                            //         in the buffer.
-                            unsafe { urb.update_transfer_len(new_len) };
-                            urb.set_status(Status::Success);
-                        }
-                        _ => urb.set_status(Status::Stall),
-                    }
-                }
-                _ => urb.set_status(Status::Stall),
-            }
+            trace!("DEVICE_DESCRIPTOR");
+
+            let length = std::cmp::min(DEV_DESC[0] as usize, control_packet.length() as usize);
+            let bytes_written = urb
+                .available_transfer_mut()
+                .iter_mut()
+                .zip(&DEV_DESC[..length])
+                .fold(0, |acc, (left, &right)| {
+                    left.write(right);
+                    acc + 1
+                });
+            // SAFETY: Wrote less than the number of bytes remaining
+            //         in the buffer.
+            unsafe { urb.update_transfer_len(bytes_written) };
+            urb.set_status(Status::Success);
+        }
+        STANDARD_DEVICE_GET_DESCRIPTOR
+            if desc.is_some_and(|typ| DescriptorType::Configuration == typ) =>
+        {
+            trace!("GET_DESCRIPTOR");
+            trace!("CONFIGURATION_DESCRIPTOR");
+
+            let length = std::cmp::min(CONF_DESC[0] as usize, control_packet.length() as usize);
+            let bytes_written = urb
+                .available_transfer_mut()
+                .iter_mut()
+                .zip(&CONF_DESC[..length])
+                .fold(0, |acc, (left, &right)| {
+                    left.write(right);
+                    acc + 1
+                });
+            // SAFETY: Wrote less than the number of bytes remaining
+            //         in the buffer.
+            unsafe { urb.update_transfer_len(bytes_written) };
+            urb.set_status(Status::Success);
+        }
+        STANDARD_DEVICE_GET_DESCRIPTOR
+            if desc.is_some_and(|typ| DescriptorType::String == typ)
+                && 0 == control_packet.value() & 0xff =>
+        {
+            trace!("GET_DESCRIPTOR");
+            trace!("STRING_DESCRIPTOR");
+            let length = std::cmp::min(STR0_DESC[0] as usize, control_packet.length() as usize);
+            let bytes_written = urb
+                .available_transfer_mut()
+                .iter_mut()
+                .zip(&STR0_DESC[..length])
+                .fold(0, |acc, (left, &right)| {
+                    left.write(right);
+                    acc + 1
+                });
+            // SAFETY: Wrote less than the number of bytes remaining
+            //         in the buffer.
+            unsafe { urb.update_transfer_len(bytes_written) };
+            urb.set_status(Status::Success);
+        }
+        STANDARD_DEVICE_GET_DESCRIPTOR
+            if desc.is_some_and(|typ| DescriptorType::String == typ)
+                && 1 == control_packet.value() & 0xff =>
+        {
+            trace!("GET_DESCRIPTOR");
+            trace!("STRING_DESCRIPTOR");
+            let length = std::cmp::min(STR1_DESC[0] as usize, control_packet.length() as usize);
+            let bytes_written = urb
+                .available_transfer_mut()
+                .iter_mut()
+                .zip(&STR1_DESC[..length])
+                .fold(0, |acc, (left, &right)| {
+                    left.write(right);
+                    acc + 1
+                });
+            // SAFETY: Wrote less than the number of bytes remaining
+            //         in the buffer.
+            unsafe { urb.update_transfer_len(bytes_written) };
+            urb.set_status(Status::Success);
         }
         _ => urb.set_status(Status::Stall),
     }
@@ -176,10 +175,10 @@ fn process_urb(urb: &mut UrbWithData) {
 
 fn main() {
     env_logger::init();
-    let num_ports = BoundedU8::new(1).unwrap();
-    let mut vhci = Controller::open(num_ports).unwrap();
-    let mut prev = ioctl::IocPortStat::default();
-    let mut addr = 0xff;
+    let num_ports = BoundedU8::new(2).unwrap();
+    let mut vhci = dbg!(Controller::open(num_ports).unwrap());
+    let mut devices = HashMap::new();
+    let mut port_stats = HashMap::new();
     let start = Instant::now();
     while start.elapsed() < Duration::from_secs(10) {
         let dur = Duration::from_millis(500);
@@ -191,24 +190,27 @@ fn main() {
         };
         debug!("==============================================");
 
-        // SAFETY: We don't alter the `typ field, which
+        // SAFETY: We don't alter the `typ` field, which
         //         satisfies the safety constraints.
         match unsafe { work.into_inner() } {
             ioctl::Work::PortStat(next) => {
+                let prev: &mut ioctl::IocPortStat = port_stats.entry(next.index()).or_default();
+
                 debug!("got port stat");
                 debug!("status: {:?}", next.status());
                 debug!("change: {:?}", next.change());
+                debug!("index: {:?}", next.index());
                 debug!("flags: {:?}", next.flags());
                 if next.change().contains(PortChange::CONNECTION) {
                     trace!("CONNECTION state changed -> invalidating address");
-                    addr = 0xff;
+                    *devices.entry(next.index()).or_insert(0xffu8) = 0xff;
                 }
                 if next.change().contains(PortChange::RESET)
                     && (!next.status()).contains(PortStatus::RESET)
                     && next.status().contains(PortStatus::ENABLE)
                 {
                     trace!("RESET successful -> use default address");
-                    addr = 0;
+                    *devices.entry(next.index()).or_insert(0xffu8) = 0;
                 }
                 if prev.status().contains(PortStatus::POWER)
                     && (!next.status()).contains(PortStatus::POWER)
@@ -218,7 +220,10 @@ fn main() {
                 if (!prev.status()).contains(PortStatus::POWER)
                     && next.status().contains(PortStatus::POWER)
                 {
-                    trace!("port is powered on -> connecting device");
+                    trace!(
+                        "port is powered on -> connecting device to {:?}",
+                        next.index()
+                    );
                     vhci.port_connect(next.index(), DataRate::Full).unwrap();
                 }
                 if (!prev.status()).contains(PortStatus::RESET)
@@ -236,12 +241,19 @@ fn main() {
                     trace!("port is resuming -> completing resume");
                     vhci.port_resumed(next.index()).unwrap();
                 }
-                prev = next;
+                *prev = next;
             }
             ioctl::Work::ProcessUrb((urb, handle)) => {
                 debug!("got process urb");
-                if urb.address.0 != addr {
-                    trace!("not for {addr}, skipping");
+                if devices
+                    .values()
+                    .find(|addr| **addr == urb.address.get())
+                    .is_none()
+                {
+                    trace!(
+                        "not for any known addr, skipping (got {:#x})",
+                        urb.address.get()
+                    );
                     continue;
                 }
 
@@ -256,19 +268,25 @@ fn main() {
                         Err(err) => Err(err).unwrap(),
                     }
                 }
+                let urb_ctrl_req = (
+                    urb.control_packet().request_type(),
+                    urb.control_packet().request(),
+                );
                 if ioctl::UrbType::Ctrl == urb.kind()
                     && urb.endpoint().is_broadcast()
-                    && usbfs::CtrlType::Standard == urb.control_packet().control_type()
-                    && usbfs::Dir::Out == urb.control_packet().direction()
-                    && usbfs::Recipient::Device == urb.control_packet().recipient()
-                    && ioctl::Req::SetAddress == urb.control_packet().b_request
+                    && STANDARD_DEVICE_SET_ADDRESS == urb_ctrl_req
                 {
-                    if 0x7f < urb.control_packet().w_value {
-                        urb.set_status(Status::Stall);
-                    } else {
+                    if let Some(adr) =
+                        Address::new(urb.control_packet().value().try_into().unwrap())
+                    {
                         urb.set_status(Status::Success);
-                        addr = urb.control_packet().w_value.try_into().unwrap();
-                        trace!("SET_ADDRESS (addr={:#x})", addr);
+                        let entry = devices.entry(Port::new(adr.get() - 1).unwrap());
+                        entry.and_modify(|addr| {
+                            *addr = adr.get();
+                            trace!("SET_ADDRESS (addr={:#x})", *addr);
+                        });
+                    } else {
+                        urb.set_status(Status::Stall);
                     }
                 } else {
                     process_urb(&mut urb);

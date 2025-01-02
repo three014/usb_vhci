@@ -9,7 +9,8 @@ use nix::{ioctl_readwrite, ioctl_write_ptr};
 use zerocopy_derive::*;
 
 use crate::{
-    usbfs::{CtrlType, Dir, Recipient},
+    usbfs::{CtrlType, Dir, Recipient, Req},
+    utils::BoundedU8,
     Port, PortChange, PortFlag, PortStatus,
 };
 
@@ -51,28 +52,6 @@ pub const URB_RQ_SET_CONFIGURATION: u8 = 9;
 pub const URB_RQ_GET_INTERFACE: u8 = 10;
 pub const URB_RQ_SET_INTERFACE: u8 = 11;
 pub const URB_RQ_SYNCH_FRAME: u8 = 12;
-
-#[cfg_attr(
-    feature = "zerocopy",
-    derive(IntoBytes, FromZeros, Unaligned, Immutable, KnownLayout,)
-)]
-#[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(u8)]
-pub enum Req {
-    /// Needs to use a literal '0' for zerocopy. Equal to [`URB_RQ_GET_STATUS`]
-    #[default]
-    GetStatus = 0,
-    ClearFeature = URB_RQ_CLEAR_FEATURE,
-    SetFeature = URB_RQ_SET_FEATURE,
-    SetAddress = URB_RQ_SET_ADDRESS,
-    GetDescriptor = URB_RQ_GET_DESCRIPTOR,
-    SetDescriptor = URB_RQ_SET_DESCRIPTOR,
-    GetConfiguration = URB_RQ_GET_CONFIGURATION,
-    SetConfiguration = URB_RQ_SET_CONFIGURATION,
-    GetInterface = URB_RQ_GET_INTERFACE,
-    SetInterface = URB_RQ_SET_INTERFACE,
-    SynchFrame = URB_RQ_SYNCH_FRAME,
-}
 
 #[cfg_attr(feature = "zerocopy", derive(Immutable, KnownLayout, TryFromBytes))]
 #[derive(Debug, Clone, Copy, Default)]
@@ -218,16 +197,34 @@ pub enum UrbType {
     feature = "zerocopy",
     derive(IntoBytes, FromBytes, Immutable, KnownLayout, Unaligned)
 )]
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(transparent)]
-pub struct Address(pub u8);
+pub struct Address(BoundedU8<0, 128>);
 
 impl Address {
     /// Returns whether the address is meant for
     /// any USB device that does not already have
     /// an assigned address.
     pub const fn is_anycast(&self) -> bool {
-        (self.0 & 0x7F) == 0
+        (self.0.get() & 0x7F) == 0
+    }
+
+    pub const fn new(addr: u8) -> Option<Self> {
+        if let Some(val) = BoundedU8::new(addr) {
+            Some(Self(val))
+        } else {
+            None
+        }
+    }
+
+    pub const fn get(&self) -> u8 {
+        self.0.get()
+    }
+}
+
+impl Default for Address {
+    fn default() -> Self {
+        Self(BoundedU8::new(0).unwrap())
     }
 }
 
