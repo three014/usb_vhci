@@ -197,7 +197,7 @@ pub enum UrbType {
     feature = "zerocopy",
     derive(FromBytes, IntoBytes, Immutable, KnownLayout)
 )]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(transparent)]
 pub struct Address(u8);
 
