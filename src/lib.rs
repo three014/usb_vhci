@@ -128,8 +128,10 @@ pub trait Urb {
     fn handle(&self) -> ioctl::UrbHandle;
     fn transfer(&self) -> &[u8];
     fn transfer_mut(&mut self) -> &mut [u8];
-    fn iso_packets(&self) -> &[IsoPacket];
-    fn iso_packets_mut(&mut self) -> &mut [IsoPacket];
+    fn iso_packets_rx(&self) -> &[ioctl::IocIsoPacketGiveback];
+    fn iso_packets_rx_mut(&mut self) -> &mut [ioctl::IocIsoPacketGiveback];
+    fn iso_packets_tx(&self) -> &[ioctl::IocIsoPacketData];
+    fn iso_packets_tx_mut(&mut self) -> &mut [ioctl::IocIsoPacketData];
     fn status(&self) -> Status;
     fn error_count(&self) -> u16;
     fn endpoint(&self) -> ioctl::Endpoint;
@@ -155,12 +157,20 @@ where
         T::transfer_mut(self)
     }
 
-    fn iso_packets(&self) -> &[IsoPacket] {
-        T::iso_packets(self)
+    fn iso_packets_tx(&self) -> &[ioctl::IocIsoPacketData] {
+        T::iso_packets_tx(self)
     }
 
-    fn iso_packets_mut(&mut self) -> &mut [IsoPacket] {
-        T::iso_packets_mut(self)
+    fn iso_packets_tx_mut(&mut self) -> &mut [ioctl::IocIsoPacketData] {
+        T::iso_packets_tx_mut(self)
+    }
+
+    fn iso_packets_rx(&self) -> &[ioctl::IocIsoPacketGiveback] {
+        T::iso_packets_rx(self)
+    }
+
+    fn iso_packets_rx_mut(&mut self) -> &mut [ioctl::IocIsoPacketGiveback] {
+        T::iso_packets_rx_mut(self)
     }
 
     fn status(&self) -> Status {
@@ -176,18 +186,11 @@ where
     }
 }
 
-#[derive(Default, Debug, Clone)]
-pub struct IsoPacket {
-    offset: u32,
-    packet_length: u32,
-    packet_actual: u32,
-    status: Status,
-}
-
 pub struct UrbWithData {
     transfer: Vec<u8>,
     urb: ioctl::IocUrb,
-    iso_packets: Box<[IsoPacket]>,
+    iso_packets_rx: Box<[ioctl::IocIsoPacketGiveback]>,
+    iso_packets_tx: Box<[ioctl::IocIsoPacketData]>,
     handle: ioctl::UrbHandle,
     status: Status,
     num_errors: u16,
@@ -210,12 +213,20 @@ impl UrbWithData {
         &self.transfer[..]
     }
 
-    pub fn iso_packets_mut(&mut self) -> &mut [IsoPacket] {
-        &mut self.iso_packets[..]
+    pub fn iso_packets_tx(&self) -> &[ioctl::IocIsoPacketData] {
+        &self.iso_packets_tx[..]
     }
 
-    pub fn iso_packets(&self) -> &[IsoPacket] {
-        &self.iso_packets[..]
+    pub fn iso_packets_tx_mut(&mut self) -> &mut [ioctl::IocIsoPacketData] {
+        &mut self.iso_packets_tx[..]
+    }
+
+    pub fn iso_packets_rx(&self) -> &[ioctl::IocIsoPacketGiveback] {
+        &self.iso_packets_rx[..]
+    }
+
+    pub fn iso_packets_rx_mut(&mut self) -> &mut [ioctl::IocIsoPacketGiveback] {
+        &mut self.iso_packets_rx[..]
     }
 
     pub const fn status_to_errno_raw(&self) -> i32 {
@@ -236,7 +247,7 @@ impl UrbWithData {
     }
 
     pub fn needs_data_fetch(&self) -> bool {
-        self.transfer().len() > 0 || self.iso_packets().len() > 0
+        self.transfer().len() > 0 || self.iso_packets_tx().len() > 0
     }
 
     pub const fn control_packet(&self) -> &ioctl::IocSetupPacket {
@@ -261,8 +272,10 @@ impl UrbWithData {
     }
 
     pub fn from_ioctl(urb: ioctl::IocUrb, handle: ioctl::UrbHandle) -> Self {
-        let iso_packets =
-            vec![IsoPacket::default(); urb.packet_count.try_into().unwrap()].into_boxed_slice();
+        let iso_packets_tx =
+            vec![ioctl::IocIsoPacketData::default(); urb.packet_count.try_into().unwrap()].into_boxed_slice();
+        let iso_packets_rx =
+            vec![ioctl::IocIsoPacketGiveback::default(); urb.packet_count.try_into().unwrap()].into_boxed_slice();
         let transfer = match urb.typ {
             ioctl::UrbType::Iso | _ if Dir::Out == urb.endpoint.direction() => {
                 vec![0; urb.buffer_length.try_into().unwrap()]
@@ -271,7 +284,8 @@ impl UrbWithData {
         };
 
         Self {
-            iso_packets,
+            iso_packets_tx,
+            iso_packets_rx,
             transfer,
             urb,
             handle,
@@ -302,12 +316,20 @@ impl Urb for UrbWithData {
         self.transfer_mut()
     }
 
-    fn iso_packets(&self) -> &[IsoPacket] {
-        self.iso_packets()
+    fn iso_packets_tx(&self) -> &[ioctl::IocIsoPacketData] {
+        self.iso_packets_tx()
     }
 
-    fn iso_packets_mut(&mut self) -> &mut [IsoPacket] {
-        self.iso_packets_mut()
+    fn iso_packets_tx_mut(&mut self) -> &mut [ioctl::IocIsoPacketData] {
+        self.iso_packets_tx_mut()
+    }
+
+    fn iso_packets_rx(&self) -> &[ioctl::IocIsoPacketGiveback] {
+        self.iso_packets_rx()
+    }
+
+    fn iso_packets_rx_mut(&mut self) -> &mut [ioctl::IocIsoPacketGiveback] {
+        self.iso_packets_rx_mut()
     }
 
     fn status(&self) -> Status {

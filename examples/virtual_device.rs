@@ -79,7 +79,7 @@ fn process_urb(urb: &mut UrbWithData) {
 
     let control_packet = urb.control_packet();
     let request_type = control_packet.request_type();
-    let request = control_packet.request();
+    let request = control_packet.req();
     let desc = DescriptorType::from_u8((control_packet.value() >> 8) as u8);
 
     match (request_type, request) {
@@ -270,7 +270,7 @@ fn main() {
                 }
                 let urb_ctrl_req = (
                     urb.control_packet().request_type(),
-                    urb.control_packet().request(),
+                    urb.control_packet().req(),
                 );
                 if ioctl::UrbType::Ctrl == urb.kind()
                     && urb.endpoint().is_anycast()

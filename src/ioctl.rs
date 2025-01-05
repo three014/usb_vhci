@@ -53,15 +53,18 @@ pub const URB_RQ_GET_INTERFACE: u8 = 10;
 pub const URB_RQ_SET_INTERFACE: u8 = 11;
 pub const URB_RQ_SYNCH_FRAME: u8 = 12;
 
-#[cfg_attr(feature = "zerocopy", derive(Immutable, KnownLayout, TryFromBytes, IntoBytes))]
-#[derive(Debug, Clone, Copy, Default)]
+#[cfg_attr(
+    feature = "zerocopy",
+    derive(Immutable, KnownLayout, FromBytes, IntoBytes)
+)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 #[repr(C)]
 pub struct IocRegister {
     pub id: i32,
     pub usb_busnum: i32,
     pub bus_id: [u8; 20],
     pub port_count: u8,
-    pub _padding: [u8; 3]
+    pub _padding: [u8; 3],
 }
 
 impl IocRegister {
@@ -71,7 +74,7 @@ impl IocRegister {
             usb_busnum: 0,
             bus_id: [0; 20],
             port_count: num_ports,
-            _padding: [0; 3]
+            _padding: [0; 3],
         }
     }
 
@@ -89,9 +92,9 @@ ioctl_readwrite!(
 
 #[cfg_attr(
     feature = "zerocopy",
-    derive(IntoBytes, TryFromBytes, Immutable, KnownLayout)
+    derive(IntoBytes, FromBytes, Immutable, KnownLayout)
 )]
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 #[repr(C)]
 pub struct IocPortStat {
     pub status: u16,
@@ -104,11 +107,11 @@ pub struct IocPortStat {
 
 impl IocPortStat {
     pub const fn status(&self) -> PortStatus {
-        PortStatus::from_bits(self.status).unwrap()
+        PortStatus::from_bits_retain(self.status)
     }
 
     pub const fn change(&self) -> PortChange {
-        PortChange::from_bits(self.change).unwrap()
+        PortChange::from_bits_retain(self.change)
     }
 
     pub const fn index(&self) -> Port {
@@ -129,7 +132,7 @@ ioctl_write_ptr!(
 
 #[cfg_attr(
     feature = "zerocopy",
-    derive(IntoBytes, TryFromBytes, Immutable, KnownLayout)
+    derive(IntoBytes, FromZeros, Immutable, KnownLayout)
 )]
 #[derive(Clone, Copy, Default)]
 #[repr(C)]
@@ -145,8 +148,9 @@ impl IocSetupPacket {
     pub const fn request_type(&self) -> (Dir, CtrlType, Recipient) {
         (self.direction(), self.control_type(), self.recipient())
     }
+
     #[inline(always)]
-    pub const fn request(&self) -> Req {
+    pub const fn req(&self) -> Req {
         self.b_request
     }
 
@@ -222,6 +226,10 @@ impl Address {
     pub const fn get(&self) -> u8 {
         self.0
     }
+
+    pub const fn as_bounded(&self) -> BoundedU8<0, 128> {
+        BoundedU8::new(self.0).unwrap()
+    }
 }
 
 #[cfg_attr(
@@ -246,7 +254,7 @@ impl Endpoint {
 
 #[cfg_attr(
     feature = "zerocopy",
-    derive(IntoBytes, TryFromBytes, Immutable, KnownLayout)
+    derive(IntoBytes, FromZeros, Immutable, KnownLayout)
 )]
 #[derive(Clone, Default, Copy)]
 #[repr(C)]
@@ -277,7 +285,12 @@ impl Default for IocWorkUnion {
     }
 }
 
+#[cfg_attr(
+    feature = "zerocopy",
+    derive(Immutable, KnownLayout, FromBytes, IntoBytes)
+)]
 #[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[repr(transparent)]
 pub struct UrbHandle(pub u64);
 
 impl UrbHandle {
@@ -372,14 +385,14 @@ ioctl_readwrite!(
     feature = "zerocopy",
     derive(FromBytes, IntoBytes, KnownLayout, Immutable)
 )]
-#[derive(Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 #[repr(C)]
 pub struct IocIsoPacketData {
     pub offset: u32,
     pub packet_length: u32,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 #[repr(C)]
 pub struct IocUrbData {
     pub handle: u64,
@@ -412,14 +425,14 @@ ioctl_write_ptr!(
     feature = "zerocopy",
     derive(FromBytes, IntoBytes, KnownLayout, Immutable)
 )]
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 #[repr(C)]
 pub struct IocIsoPacketGiveback {
     pub packet_actual: u32,
     pub status: i32,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 #[repr(C)]
 pub struct IocGiveback {
     pub handle: u64,

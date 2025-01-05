@@ -10,7 +10,7 @@ use crate::{
     ioctl,
     usbfs::Dir,
     utils::{BoundedI16, BoundedU8, TimeoutMillis},
-    DataRate, Port, PortChange, PortStatus, Status, Urb, MAX_ISO_PACKETS,
+    DataRate, Port, PortChange, PortStatus, Urb, MAX_ISO_PACKETS,
 };
 
 static USB_VHCI_DEVICE_FILE: &str = "/dev/usb-vhci";
@@ -61,78 +61,55 @@ impl Remote {
     pub fn fetch_data(&self, mut urb: impl Urb) -> io::Result<()> {
         let buffer_length = urb.transfer_mut().len().try_into().unwrap();
         let buffer = urb.transfer_mut().as_mut_ptr().cast();
-        let packet_count = urb.iso_packets().len();
+        let packet_count = urb.iso_packets_tx().len();
+        assert!(packet_count <= MAX_ISO_PACKETS);
+
         let mut ioc_urb_data = ioctl::IocUrbData {
             handle: urb.handle().get(),
             buffer,
             buffer_length,
-            packet_count: packet_count.try_into().unwrap(),
             ..Default::default()
         };
-        assert!(packet_count <= MAX_ISO_PACKETS);
-        let mut ioc_iso_packets = heapless::Vec::<ioctl::IocIsoPacketData, MAX_ISO_PACKETS>::new();
-        ioc_iso_packets.resize_default(packet_count).unwrap();
-        if packet_count > 0 {
-            ioc_urb_data.iso_packets = ioc_iso_packets.as_mut_ptr();
+
+        if 0 < packet_count {
+            ioc_urb_data.iso_packets = urb.iso_packets_tx_mut().as_mut_ptr();
+            ioc_urb_data.packet_count = packet_count.try_into().unwrap();
         }
 
         // SAFETY:
         // - `ioc_iso_packets` is valid and initialized for the ioctl call
         // - transfer buffer is initialized and its length does not change
         unsafe {
-            ioctl::usb_vhci_fetchdata(self.dev, &raw mut ioc_urb_data).map_err(io::Error::from)?;
-
-            // After the ioctl call, we access the iso packet vec,
-            // so we avoid aliasing the data from this struct.
-            ioc_urb_data.iso_packets = std::ptr::null_mut();
+            ioctl::usb_vhci_fetchdata(self.dev, &raw mut ioc_urb_data).map_err(io::Error::from)?
         };
-
-        if urb.kind() == ioctl::UrbType::Iso {
-            for (iso_packet, ioc_iso_packet) in
-                urb.iso_packets_mut().iter_mut().zip(ioc_iso_packets)
-            {
-                iso_packet.offset = ioc_iso_packet.offset;
-                iso_packet.packet_length = ioc_iso_packet.packet_length;
-                iso_packet.packet_actual = 0;
-                iso_packet.status = Status::Pending;
-            }
-        }
 
         Ok(())
     }
 
     pub fn giveback(&self, mut urb: impl Urb) -> io::Result<()> {
-        let packet_count = urb.iso_packets().len();
+        let packet_count = urb.iso_packets_rx().len();
+        let buffer_len = urb.transfer().len();
+        assert!(packet_count <= MAX_ISO_PACKETS);
+
         let mut ioc_giveback = ioctl::IocGiveback {
             handle: urb.handle().get(),
             status: urb.status().to_errno_raw(ioctl::UrbType::Iso == urb.kind()),
-            buffer_actual: urb.transfer().len().try_into().unwrap(),
             ..Default::default()
         };
 
-        assert!(packet_count <= MAX_ISO_PACKETS);
-        let mut ioc_iso_packets =
-            heapless::Vec::<ioctl::IocIsoPacketGiveback, MAX_ISO_PACKETS>::new();
-        ioc_iso_packets.resize_default(packet_count).unwrap();
 
-        if Dir::In == urb.endpoint().direction() && ioc_giveback.buffer_actual > 0 {
+        if Dir::In == urb.endpoint().direction() && 0 < buffer_len {
             ioc_giveback.buffer = urb.transfer_mut().as_mut_ptr().cast();
+            ioc_giveback.buffer_actual = buffer_len.try_into().unwrap();
         }
 
         if ioctl::UrbType::Iso == urb.kind() {
-            for (iso_packet, ioc_iso_packet) in
-                urb.iso_packets().iter().zip(ioc_iso_packets.iter_mut())
-            {
-                ioc_iso_packet.packet_actual = iso_packet.packet_actual;
-                ioc_iso_packet.status = iso_packet.status.to_errno_raw(true);
-            }
-
-            ioc_giveback.iso_packets = ioc_iso_packets.as_mut_ptr();
+            ioc_giveback.iso_packets = urb.iso_packets_rx_mut().as_mut_ptr();
             ioc_giveback.packet_count = packet_count.try_into().unwrap();
             ioc_giveback.error_count = urb.error_count().into();
         }
 
-        // SAFETY: All buffers are valid for the ioctl call,
+        // SAFETY: All buffers are valid for the ioctl call
         unsafe {
             match ioctl::usb_vhci_giveback(self.dev, &raw mut ioc_giveback) {
                 Err(nix::Error::ECANCELED) | Ok(_) => Ok(()),
