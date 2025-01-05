@@ -7,10 +7,7 @@ use std::{
 use bit_vec::BitVec;
 
 use crate::{
-    ioctl,
-    usbfs::Dir,
-    utils::{BoundedI16, BoundedU8, TimeoutMillis},
-    DataRate, Port, PortChange, PortStatus, Urb, MAX_ISO_PACKETS,
+    ioctl, usbfs::Dir, utils::{BoundedI16, BoundedU8, TimeoutMillis}, DataRate, IsoPacketDataMut, IsoPacketGivebackMut, Port, PortChange, PortStatus, TransferMut, Urb, MAX_ISO_PACKETS
 };
 
 static USB_VHCI_DEVICE_FILE: &str = "/dev/usb-vhci";
@@ -58,10 +55,10 @@ impl Remote {
         Self { dev }
     }
 
-    pub fn fetch_data(&self, mut urb: impl Urb) -> io::Result<()> {
+    pub fn fetch_data(&self, mut urb: impl Urb + IsoPacketDataMut + TransferMut) -> io::Result<()> {
         let buffer_length = urb.transfer_mut().len().try_into().unwrap();
         let buffer = urb.transfer_mut().as_mut_ptr().cast();
-        let packet_count = urb.iso_packets_tx().len();
+        let packet_count = urb.iso_packet_data_mut().len();
         assert!(packet_count <= MAX_ISO_PACKETS);
 
         let mut ioc_urb_data = ioctl::IocUrbData {
@@ -72,7 +69,7 @@ impl Remote {
         };
 
         if 0 < packet_count {
-            ioc_urb_data.iso_packets = urb.iso_packets_tx_mut().as_mut_ptr();
+            ioc_urb_data.iso_packets = urb.iso_packet_data_mut().as_mut_ptr();
             ioc_urb_data.packet_count = packet_count.try_into().unwrap();
         }
 
@@ -86,9 +83,9 @@ impl Remote {
         Ok(())
     }
 
-    pub fn giveback(&self, mut urb: impl Urb) -> io::Result<()> {
-        let packet_count = urb.iso_packets_rx().len();
-        let buffer_len = urb.transfer().len();
+    pub fn giveback(&self, mut urb: impl Urb + IsoPacketGivebackMut + TransferMut) -> io::Result<()> {
+        let packet_count = urb.iso_packet_giveback_mut().len();
+        let buffer_len = urb.transfer_mut().len();
         assert!(packet_count <= MAX_ISO_PACKETS);
 
         let mut ioc_giveback = ioctl::IocGiveback {
@@ -104,7 +101,7 @@ impl Remote {
         }
 
         if ioctl::UrbType::Iso == urb.kind() {
-            ioc_giveback.iso_packets = urb.iso_packets_rx_mut().as_mut_ptr();
+            ioc_giveback.iso_packets = urb.iso_packet_giveback_mut().as_mut_ptr();
             ioc_giveback.packet_count = packet_count.try_into().unwrap();
             ioc_giveback.error_count = urb.error_count().into();
         }
@@ -272,11 +269,11 @@ impl Controller {
         }
     }
 
-    pub fn fetch_data(&self, urb: impl Urb) -> io::Result<()> {
+    pub fn fetch_data(&self, urb: impl Urb + TransferMut + IsoPacketDataMut) -> io::Result<()> {
         Remote::new(self.dev.as_raw_fd()).fetch_data(urb)
     }
 
-    pub fn giveback(&self, urb: impl Urb) -> io::Result<()> {
+    pub fn giveback(&self, urb: impl Urb + TransferMut + IsoPacketGivebackMut) -> io::Result<()> {
         Remote::new(self.dev.as_raw_fd()).giveback(urb)
     }
 

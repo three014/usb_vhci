@@ -126,15 +126,34 @@ bitflags! {
 pub trait Urb {
     fn kind(&self) -> ioctl::UrbType;
     fn handle(&self) -> ioctl::UrbHandle;
-    fn transfer(&self) -> &[u8];
-    fn transfer_mut(&mut self) -> &mut [u8];
-    fn iso_packets_rx(&self) -> &[ioctl::IocIsoPacketGiveback];
-    fn iso_packets_rx_mut(&mut self) -> &mut [ioctl::IocIsoPacketGiveback];
-    fn iso_packets_tx(&self) -> &[ioctl::IocIsoPacketData];
-    fn iso_packets_tx_mut(&mut self) -> &mut [ioctl::IocIsoPacketData];
     fn status(&self) -> Status;
-    fn error_count(&self) -> u16;
     fn endpoint(&self) -> ioctl::Endpoint;
+}
+
+pub trait Transfer {
+    fn transfer(&self) -> &[u8];
+}
+
+pub trait TransferMut {
+    fn transfer_mut(&mut self) -> &mut [u8];
+}
+
+pub trait IsoPacketData {
+    fn iso_packet_data(&self) -> &[ioctl::IocIsoPacketData];
+}
+
+pub trait IsoPacketDataMut {
+    fn iso_packet_data_mut(&mut self) -> &mut [ioctl::IocIsoPacketData];
+}
+
+pub trait IsoPacketGiveback {
+    fn iso_packet_giveback(&self) -> &[ioctl::IocIsoPacketGiveback];
+    fn error_count(&self) -> u16;
+}
+
+pub trait IsoPacketGivebackMut {
+    fn iso_packet_giveback_mut(&mut self) -> &mut [ioctl::IocIsoPacketGiveback];
+    fn error_count(&self) -> u16;
 }
 
 impl<T> Urb for &mut T
@@ -149,36 +168,8 @@ where
         T::handle(self)
     }
 
-    fn transfer(&self) -> &[u8] {
-        T::transfer(self)
-    }
-
-    fn transfer_mut(&mut self) -> &mut [u8] {
-        T::transfer_mut(self)
-    }
-
-    fn iso_packets_tx(&self) -> &[ioctl::IocIsoPacketData] {
-        T::iso_packets_tx(self)
-    }
-
-    fn iso_packets_tx_mut(&mut self) -> &mut [ioctl::IocIsoPacketData] {
-        T::iso_packets_tx_mut(self)
-    }
-
-    fn iso_packets_rx(&self) -> &[ioctl::IocIsoPacketGiveback] {
-        T::iso_packets_rx(self)
-    }
-
-    fn iso_packets_rx_mut(&mut self) -> &mut [ioctl::IocIsoPacketGiveback] {
-        T::iso_packets_rx_mut(self)
-    }
-
     fn status(&self) -> Status {
         T::status(self)
-    }
-
-    fn error_count(&self) -> u16 {
-        T::error_count(self)
     }
 
     fn endpoint(&self) -> ioctl::Endpoint {
@@ -273,9 +264,11 @@ impl UrbWithData {
 
     pub fn from_ioctl(urb: ioctl::IocUrb, handle: ioctl::UrbHandle) -> Self {
         let iso_packets_tx =
-            vec![ioctl::IocIsoPacketData::default(); urb.packet_count.try_into().unwrap()].into_boxed_slice();
+            vec![ioctl::IocIsoPacketData::default(); urb.packet_count.try_into().unwrap()]
+                .into_boxed_slice();
         let iso_packets_rx =
-            vec![ioctl::IocIsoPacketGiveback::default(); urb.packet_count.try_into().unwrap()].into_boxed_slice();
+            vec![ioctl::IocIsoPacketGiveback::default(); urb.packet_count.try_into().unwrap()]
+                .into_boxed_slice();
         let transfer = match urb.typ {
             ioctl::UrbType::Iso | _ if Dir::Out == urb.endpoint.direction() => {
                 vec![0; urb.buffer_length.try_into().unwrap()]
@@ -308,40 +301,56 @@ impl Urb for UrbWithData {
         self.handle()
     }
 
+    fn status(&self) -> Status {
+        self.status
+    }
+
+    fn endpoint(&self) -> ioctl::Endpoint {
+        self.endpoint()
+    }
+}
+
+impl Transfer for UrbWithData {
     fn transfer(&self) -> &[u8] {
         self.transfer()
     }
+}
 
+impl TransferMut for UrbWithData {
     fn transfer_mut(&mut self) -> &mut [u8] {
         self.transfer_mut()
     }
+}
 
-    fn iso_packets_tx(&self) -> &[ioctl::IocIsoPacketData] {
+impl IsoPacketData for UrbWithData {
+    fn iso_packet_data(&self) -> &[ioctl::IocIsoPacketData] {
         self.iso_packets_tx()
     }
+}
 
-    fn iso_packets_tx_mut(&mut self) -> &mut [ioctl::IocIsoPacketData] {
+impl IsoPacketDataMut for UrbWithData {
+    fn iso_packet_data_mut(&mut self) -> &mut [ioctl::IocIsoPacketData] {
         self.iso_packets_tx_mut()
     }
+}
 
-    fn iso_packets_rx(&self) -> &[ioctl::IocIsoPacketGiveback] {
+impl IsoPacketGiveback for UrbWithData {
+    fn iso_packet_giveback(&self) -> &[ioctl::IocIsoPacketGiveback] {
         self.iso_packets_rx()
-    }
-
-    fn iso_packets_rx_mut(&mut self) -> &mut [ioctl::IocIsoPacketGiveback] {
-        self.iso_packets_rx_mut()
-    }
-
-    fn status(&self) -> Status {
-        self.status
     }
 
     fn error_count(&self) -> u16 {
         self.error_count()
     }
+}
 
-    fn endpoint(&self) -> ioctl::Endpoint {
-        self.endpoint()
+impl IsoPacketGivebackMut for UrbWithData {
+    fn iso_packet_giveback_mut(&mut self) -> &mut [ioctl::IocIsoPacketGiveback] {
+        self.iso_packets_rx_mut()
+    }
+
+    fn error_count(&self) -> u16 {
+        self.error_count()
     }
 }
 
