@@ -7,7 +7,10 @@ use crate::ioctl::{
 #[cfg(feature = "zerocopy")]
 use zerocopy_derive::*;
 
-#[cfg_attr(feature = "zerocopy", derive(KnownLayout, Immutable, IntoBytes, TryFromBytes, Unaligned))]
+#[cfg_attr(
+    feature = "zerocopy",
+    derive(KnownLayout, Immutable, IntoBytes, TryFromBytes, Unaligned)
+)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum DescriptorType {
@@ -32,7 +35,10 @@ impl DescriptorType {
 }
 
 /// Transfer direction.
-#[cfg_attr(feature = "zerocopy", derive(KnownLayout, Immutable, IntoBytes, FromZeros, Unaligned))]
+#[cfg_attr(
+    feature = "zerocopy",
+    derive(KnownLayout, Immutable, IntoBytes, FromZeros, Unaligned)
+)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum Dir {
@@ -54,7 +60,10 @@ impl Dir {
 }
 
 /// Specification defining the request
-#[cfg_attr(feature = "zerocopy", derive(KnownLayout, Immutable, IntoBytes, FromZeros, Unaligned))]
+#[cfg_attr(
+    feature = "zerocopy",
+    derive(KnownLayout, Immutable, IntoBytes, FromZeros, Unaligned)
+)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum CtrlType {
@@ -80,7 +89,10 @@ impl CtrlType {
 }
 
 /// Entity targeted by the request.
-#[cfg_attr(feature = "zerocopy", derive(KnownLayout, Immutable, IntoBytes, FromZeros, Unaligned))]
+#[cfg_attr(
+    feature = "zerocopy",
+    derive(KnownLayout, Immutable, IntoBytes, FromZeros, Unaligned)
+)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum Recipient {

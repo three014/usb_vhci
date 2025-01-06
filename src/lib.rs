@@ -41,7 +41,7 @@ impl Port {
 
 #[cfg_attr(
     feature = "zerocopy",
-    derive(KnownLayout, Immutable, IntoBytes, TryFromBytes)
+    derive(KnownLayout, Immutable, IntoBytes, FromZeros)
 )]
 #[derive(Debug, num_enum::TryFromPrimitive, Default, Clone, Copy, PartialEq, Eq)]
 #[repr(i32)]
@@ -176,6 +176,70 @@ where
         T::endpoint(self)
     }
 }
+
+impl<T> Transfer for &T
+where
+    T: Transfer + ?Sized,
+{
+    fn transfer(&self) -> &[u8] {
+        T::transfer(self)
+    }
+}
+
+
+impl<T> TransferMut for &mut T
+where
+    T: TransferMut + ?Sized,
+{
+    fn transfer_mut(&mut self) -> &mut [u8] {
+        T::transfer_mut(self)
+    }
+}
+
+impl<T> IsoPacketData for &T
+where
+    T: IsoPacketData + ?Sized
+{
+    fn iso_packet_data(&self) -> &[ioctl::IocIsoPacketData] {
+        T::iso_packet_data(self)
+    }
+}
+
+impl<T> IsoPacketDataMut for &mut T
+where
+    T: IsoPacketDataMut + ?Sized
+{
+    fn iso_packet_data_mut(&mut self) -> &mut [ioctl::IocIsoPacketData] {
+        T::iso_packet_data_mut(self)
+    }
+}
+
+impl<T> IsoPacketGiveback for &T
+where
+    T: IsoPacketGiveback + ?Sized
+{
+    fn iso_packet_giveback(&self) -> &[ioctl::IocIsoPacketGiveback] {
+        T::iso_packet_giveback(self)
+    }
+
+    fn error_count(&self) -> u16 {
+        T::error_count(self)
+    }
+}
+
+impl<T> IsoPacketGivebackMut for &mut T
+where
+    T: IsoPacketGivebackMut + ?Sized
+{
+    fn iso_packet_giveback_mut(&mut self) -> &mut [ioctl::IocIsoPacketGiveback] {
+        T::iso_packet_giveback_mut(self)
+    }
+
+    fn error_count(&self) -> u16 {
+        T::error_count(self)
+    }
+}
+
 
 pub struct UrbWithData {
     transfer: Vec<u8>,
