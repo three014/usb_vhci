@@ -113,7 +113,7 @@ impl Status {
 }
 
 bitflags! {
-    #[derive(Debug, Clone, Copy)]
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub struct UrbFlags: u16 {
         const SHORT_NOT_OK = 0x0001;
         const ISO_ASAP = 0x0002;
@@ -186,7 +186,6 @@ where
     }
 }
 
-
 impl<T> TransferMut for &mut T
 where
     T: TransferMut + ?Sized,
@@ -198,7 +197,7 @@ where
 
 impl<T> IsoPacketData for &T
 where
-    T: IsoPacketData + ?Sized
+    T: IsoPacketData + ?Sized,
 {
     fn iso_packet_data(&self) -> &[ioctl::IocIsoPacketData] {
         T::iso_packet_data(self)
@@ -207,7 +206,7 @@ where
 
 impl<T> IsoPacketDataMut for &mut T
 where
-    T: IsoPacketDataMut + ?Sized
+    T: IsoPacketDataMut + ?Sized,
 {
     fn iso_packet_data_mut(&mut self) -> &mut [ioctl::IocIsoPacketData] {
         T::iso_packet_data_mut(self)
@@ -216,7 +215,7 @@ where
 
 impl<T> IsoPacketGiveback for &T
 where
-    T: IsoPacketGiveback + ?Sized
+    T: IsoPacketGiveback + ?Sized,
 {
     fn iso_packet_giveback(&self) -> &[ioctl::IocIsoPacketGiveback] {
         T::iso_packet_giveback(self)
@@ -229,7 +228,7 @@ where
 
 impl<T> IsoPacketGivebackMut for &mut T
 where
-    T: IsoPacketGivebackMut + ?Sized
+    T: IsoPacketGivebackMut + ?Sized,
 {
     fn iso_packet_giveback_mut(&mut self) -> &mut [ioctl::IocIsoPacketGiveback] {
         T::iso_packet_giveback_mut(self)
@@ -239,7 +238,6 @@ where
         T::error_count(self)
     }
 }
-
 
 pub struct UrbWithData {
     transfer: Vec<u8>,

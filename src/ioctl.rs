@@ -134,7 +134,7 @@ ioctl_write_ptr!(
     feature = "zerocopy",
     derive(IntoBytes, FromZeros, Immutable, KnownLayout)
 )]
-#[derive(Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default)]
 #[repr(C)]
 pub struct IocSetupPacket {
     pub bm_request_type: u8,
@@ -181,6 +181,20 @@ impl IocSetupPacket {
 
     pub const fn length(&self) -> u16 {
         self.w_length
+    }
+}
+
+impl std::fmt::Display for IocSetupPacket {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f, 
+            "vhci::ioctl::IocSetupPacket {{ request_type: {:?}, request: {:?}, value: {}, index: {}, length: {} }}", 
+            self.request_type(), 
+            self.req(), 
+            self.value(), 
+            self.index(), 
+            self.length()
+        )
     }
 }
 
@@ -256,7 +270,7 @@ impl Endpoint {
     feature = "zerocopy",
     derive(IntoBytes, FromZeros, Immutable, KnownLayout)
 )]
-#[derive(Clone, Default, Copy)]
+#[derive(Debug, Clone, Default, Copy)]
 #[repr(C)]
 pub struct IocUrb {
     pub setup_packet: IocSetupPacket,
@@ -307,7 +321,7 @@ pub enum WorkRef<'a> {
     CancelUrb(UrbHandle),
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub enum Work {
     PortStat(IocPortStat),
     ProcessUrb((IocUrb, UrbHandle)),
