@@ -143,6 +143,25 @@ pub enum Req {
     SynchFrame = URB_RQ_SYNCH_FRAME,
 }
 
+impl Req {
+    pub const fn from_u8(num: u8) -> Option<Self> {
+        match num {
+            0 => Some(Self::GetStatus),
+            URB_RQ_CLEAR_FEATURE => Some(Self::ClearFeature),
+            URB_RQ_SET_FEATURE => Some(Self::SetFeature),
+            URB_RQ_SET_ADDRESS => Some(Self::SetAddress),
+            URB_RQ_GET_DESCRIPTOR => Some(Self::GetDescriptor),
+            URB_RQ_SET_DESCRIPTOR => Some(Self::SetDescriptor),
+            URB_RQ_GET_CONFIGURATION => Some(Self::GetConfiguration),
+            URB_RQ_SET_CONFIGURATION => Some(Self::SetConfiguration),
+            URB_RQ_GET_INTERFACE => Some(Self::GetInterface),
+            URB_RQ_SET_INTERFACE => Some(Self::SetInterface),
+            URB_RQ_SYNCH_FRAME => Some(Self::SynchFrame),
+            _ => None,
+        }
+    }
+}
+
 pub type UsbReq = ((Dir, CtrlType, Recipient), Req);
 
 pub const STANDARD_DEVICE_GET_STATUS: UsbReq = (

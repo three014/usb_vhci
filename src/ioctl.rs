@@ -94,7 +94,7 @@ ioctl_readwrite!(
     feature = "zerocopy",
     derive(IntoBytes, FromBytes, Immutable, KnownLayout)
 )]
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
 #[repr(C)]
 pub struct IocPortStat {
     pub status: u16,
@@ -123,6 +123,17 @@ impl IocPortStat {
     }
 }
 
+impl std::fmt::Debug for IocPortStat {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("IocPortStat")
+            .field("status", &self.status())
+            .field("change", &self.change())
+            .field("index", &self.index())
+            .field("flags", &self.flags())
+            .finish()
+    }
+}
+
 ioctl_write_ptr!(
     usb_vhci_portstat,
     USB_VHCI_HCD_IOC_MAGIC,
@@ -132,13 +143,13 @@ ioctl_write_ptr!(
 
 #[cfg_attr(
     feature = "zerocopy",
-    derive(IntoBytes, FromZeros, Immutable, KnownLayout)
+    derive(IntoBytes, FromBytes, Immutable, KnownLayout)
 )]
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Clone, Copy, Default)]
 #[repr(C)]
 pub struct IocSetupPacket {
     pub bm_request_type: u8,
-    pub b_request: Req,
+    pub b_request: u8,
     pub w_value: u16,
     pub w_index: u16,
     pub w_length: u16,
@@ -151,7 +162,7 @@ impl IocSetupPacket {
 
     #[inline(always)]
     pub const fn req(&self) -> Req {
-        self.b_request
+        Req::from_u8(self.b_request).unwrap()
     }
 
     #[inline(always)]
@@ -184,17 +195,21 @@ impl IocSetupPacket {
     }
 }
 
+impl std::fmt::Debug for IocSetupPacket {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("IocSetupPacket")
+            .field("request_type", &self.request_type())
+            .field("request", &self.req())
+            .field("value", &self.value())
+            .field("index", &self.index())
+            .field("length", &self.length())
+            .finish()
+    }
+}
+
 impl std::fmt::Display for IocSetupPacket {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f, 
-            "vhci::ioctl::IocSetupPacket {{ request_type: {:?}, request: {:?}, value: {}, index: {}, length: {} }}", 
-            self.request_type(), 
-            self.req(), 
-            self.value(), 
-            self.index(), 
-            self.length()
-        )
+        write!(f, "{:?}", self)
     }
 }
 
