@@ -7,10 +7,7 @@ use std::{
 use log::{debug, trace};
 use usb_vhci::{
     ioctl::{self, Address},
-    usbfs::{
-        DescriptorType, STANDARD_DEVICE_GET_DESCRIPTOR, STANDARD_DEVICE_SET_ADDRESS,
-        STANDARD_DEVICE_SET_CONFIGURATION, STANDARD_INTERFACE_SET_INTERFACE,
-    },
+    usbfs::{DescriptorType, Request},
     utils::{BoundedU8, TimeoutMillis},
     Controller, DataRate, Port, PortChange, PortFlag, PortStatus, Status, UrbWithData,
 };
@@ -78,20 +75,18 @@ fn process_urb(urb: &mut UrbWithData) {
     }
 
     let control_packet = urb.control_packet();
-    let request_type = control_packet.request_type();
-    let request = control_packet.req();
     let desc = DescriptorType::from_u8((control_packet.value() >> 8) as u8);
 
-    match (request_type, request) {
-        STANDARD_DEVICE_SET_CONFIGURATION => {
+    match control_packet.req() {
+        Request::STANDARD_DEVICE_SET_CONFIGURATION => {
             trace!("SET_CONFIGURATION");
             urb.set_status(Status::Success);
         }
-        STANDARD_INTERFACE_SET_INTERFACE => {
+        Request::STANDARD_INTERFACE_SET_INTERFACE => {
             trace!("SET_INTERFACE");
             urb.set_status(Status::Success);
         }
-        STANDARD_DEVICE_GET_DESCRIPTOR if desc.is_some_and(|typ| DescriptorType::Device == typ) => {
+        Request::STANDARD_DEVICE_GET_DESCRIPTOR if desc.is_some_and(|typ| DescriptorType::Device == typ) => {
             trace!("GET_DESCRIPTOR");
             trace!("DEVICE_DESCRIPTOR");
 
@@ -109,7 +104,7 @@ fn process_urb(urb: &mut UrbWithData) {
             unsafe { urb.update_transfer_len(bytes_written) };
             urb.set_status(Status::Success);
         }
-        STANDARD_DEVICE_GET_DESCRIPTOR
+        Request::STANDARD_DEVICE_GET_DESCRIPTOR
             if desc.is_some_and(|typ| DescriptorType::Configuration == typ) =>
         {
             trace!("GET_DESCRIPTOR");
@@ -129,7 +124,7 @@ fn process_urb(urb: &mut UrbWithData) {
             unsafe { urb.update_transfer_len(bytes_written) };
             urb.set_status(Status::Success);
         }
-        STANDARD_DEVICE_GET_DESCRIPTOR
+        Request::STANDARD_DEVICE_GET_DESCRIPTOR
             if desc.is_some_and(|typ| DescriptorType::String == typ)
                 && 0 == control_packet.value() & 0xff =>
         {
@@ -149,7 +144,7 @@ fn process_urb(urb: &mut UrbWithData) {
             unsafe { urb.update_transfer_len(bytes_written) };
             urb.set_status(Status::Success);
         }
-        STANDARD_DEVICE_GET_DESCRIPTOR
+        Request::STANDARD_DEVICE_GET_DESCRIPTOR
             if desc.is_some_and(|typ| DescriptorType::String == typ)
                 && 1 == control_packet.value() & 0xff =>
         {
@@ -268,13 +263,10 @@ fn main() {
                         Err(err) => Err(err).unwrap(),
                     }
                 }
-                let urb_ctrl_req = (
-                    urb.control_packet().request_type(),
-                    urb.control_packet().req(),
-                );
+                
                 if ioctl::UrbType::Ctrl == urb.kind()
                     && urb.endpoint().is_anycast()
-                    && STANDARD_DEVICE_SET_ADDRESS == urb_ctrl_req
+                    && Request::STANDARD_DEVICE_SET_ADDRESS == urb.control_packet().req()
                 {
                     if let Some(adr) =
                         Address::new(urb.control_packet().value().try_into().unwrap())

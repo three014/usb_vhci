@@ -7,6 +7,142 @@ use crate::ioctl::{
 #[cfg(feature = "zerocopy")]
 use zerocopy_derive::*;
 
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Request {
+    pub bm_request_type: u8,
+    pub b_request: u8,
+}
+
+impl Request {
+    pub const STANDARD_DEVICE_GET_STATUS: Self = Self {
+        bm_request_type: 0x80,
+        b_request: 0x00,
+    };
+
+    pub const STANDARD_DEVICE_CLEAR_FEATURE: Self = Self {
+        bm_request_type: 0x00,
+        b_request: 0x01,
+    };
+
+    pub const STANDARD_DEVICE_SET_FEATURE: Self = Self {
+        bm_request_type: 0x00,
+        b_request: 0x03,
+    };
+
+    pub const STANDARD_DEVICE_SET_ADDRESS: Self = Self {
+        bm_request_type: 0x00,
+        b_request: 0x05,
+    };
+
+    pub const STANDARD_DEVICE_GET_DESCRIPTOR: Self = Self {
+        bm_request_type: 0x80,
+        b_request: 0x06,
+    };
+
+    pub const STANDARD_DEVICE_SET_DESCRIPTOR: Self = Self {
+        bm_request_type: 0x00,
+        b_request: 0x07,
+    };
+
+    pub const STANDARD_DEVICE_GET_CONFIGURATION: Self = Self {
+        bm_request_type: 0x80,
+        b_request: 0x08,
+    };
+
+    pub const STANDARD_DEVICE_SET_CONFIGURATION: Self = Self {
+        bm_request_type: 0x00,
+        b_request: 0x09,
+    };
+
+    pub const STANDARD_INTERFACE_GET_STATUS: Self = Self {
+        bm_request_type: 0x81,
+        b_request: 0x00,
+    };
+
+    pub const STANDARD_INTERFACE_CLEAR_FEATURE: Self = Self {
+        bm_request_type: 0x01,
+        b_request: 0x01,
+    };
+
+    pub const STANDARD_INTERFACE_SET_FEATURE: Self = Self {
+        bm_request_type: 0x01,
+        b_request: 0x03,
+    };
+
+    pub const STANDARD_INTERFACE_GET_INTERFACE: Self = Self {
+        bm_request_type: 0x81,
+        b_request: 0x0A,
+    };
+
+    pub const STANDARD_INTERFACE_SET_INTERFACE: Self = Self {
+        bm_request_type: 0x01,
+        b_request: 0x11,
+    };
+
+    pub const STANDARD_ENDPOINT_GET_STATUS: Self = Self {
+        bm_request_type: 0x82,
+        b_request: 0x00,
+    };
+
+    pub const STANDARD_ENDPOINT_CLEAR_FEATURE: Self = Self {
+        bm_request_type: 0x02,
+        b_request: 0x01,
+    };
+
+    pub const STANDARD_ENDPOINT_SET_FEATURE: Self = Self {
+        bm_request_type: 0x02,
+        b_request: 0x03,
+    };
+
+    pub const STANDARD_ENDPOINT_SYNCH_FRAME: Self = Self {
+        bm_request_type: 0x82,
+        b_request: 0x12,
+    };
+
+    pub const fn kind(&self) -> (Dir, CtrlType, Recipient) {
+        (self.dir(), self.ctrl_type(), self.recipient())
+    }
+
+    pub const fn ctrl_type(&self) -> CtrlType {
+        CtrlType::from_u8((self.bm_request_type & 0x60) >> 5).unwrap()
+    }
+
+    pub const fn dir(&self) -> Dir {
+        Dir::from_u8((self.bm_request_type & 0x80) >> 7).unwrap()
+    }
+
+    pub const fn recipient(&self) -> Recipient {
+        Recipient::from_u8(self.bm_request_type & 0x1F).unwrap()
+    }
+
+    pub const fn req(&self) -> Req {
+        match self.kind() {
+            (_, CtrlType::Standard, _) => Req::standard_from_u8(self.b_request),
+            (Dir::Out, CtrlType::Class, Recipient::Interface) => Req::class_from_u8(self.b_request),
+            _ => Req::Other(self.b_request),
+        }
+    }
+}
+
+impl std::fmt::Display for Request {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "[{:?} | {:?} | {:?}] {:?}",
+            self.dir(),
+            self.ctrl_type(),
+            self.recipient(),
+            self.req()
+        )
+    }
+}
+
+impl std::fmt::Debug for Request {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(self, f)
+    }
+}
+
 #[cfg_attr(
     feature = "zerocopy",
     derive(KnownLayout, Immutable, IntoBytes, TryFromBytes, Unaligned)
@@ -121,130 +257,48 @@ impl Recipient {
     }
 }
 
-#[cfg_attr(
-    feature = "zerocopy",
-    derive(IntoBytes, FromZeros, Unaligned, Immutable, KnownLayout)
-)]
-#[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(u8)]
+#[derive(Default, Debug, Clone, Copy)]
 pub enum Req {
-    /// Needs to use a literal '0' for zerocopy. Equal to [`URB_RQ_GET_STATUS`]
     #[default]
-    GetStatus = 0,
-    ClearFeature = URB_RQ_CLEAR_FEATURE,
-    SetFeature = URB_RQ_SET_FEATURE,
-    SetAddress = URB_RQ_SET_ADDRESS,
-    GetDescriptor = URB_RQ_GET_DESCRIPTOR,
-    SetDescriptor = URB_RQ_SET_DESCRIPTOR,
-    GetConfiguration = URB_RQ_GET_CONFIGURATION,
-    SetConfiguration = URB_RQ_SET_CONFIGURATION,
-    GetInterface = URB_RQ_GET_INTERFACE,
-    SetInterface = URB_RQ_SET_INTERFACE,
-    SynchFrame = URB_RQ_SYNCH_FRAME,
+    GetStatus,
+    ClearFeature,
+    SetFeature,
+    SetAddress,
+    GetDescriptor,
+    SetDescriptor,
+    GetConfiguration,
+    SetConfiguration,
+    GetInterface,
+    SetInterface,
+    SynchFrame,
+    BulkOnlyMassStorageReset,
+    GetMaxLun,
+    Other(u8),
 }
 
 impl Req {
-    pub const fn from_u8(num: u8) -> Option<Self> {
-        match num {
-            0 => Some(Self::GetStatus),
-            URB_RQ_CLEAR_FEATURE => Some(Self::ClearFeature),
-            URB_RQ_SET_FEATURE => Some(Self::SetFeature),
-            URB_RQ_SET_ADDRESS => Some(Self::SetAddress),
-            URB_RQ_GET_DESCRIPTOR => Some(Self::GetDescriptor),
-            URB_RQ_SET_DESCRIPTOR => Some(Self::SetDescriptor),
-            URB_RQ_GET_CONFIGURATION => Some(Self::GetConfiguration),
-            URB_RQ_SET_CONFIGURATION => Some(Self::SetConfiguration),
-            URB_RQ_GET_INTERFACE => Some(Self::GetInterface),
-            URB_RQ_SET_INTERFACE => Some(Self::SetInterface),
-            URB_RQ_SYNCH_FRAME => Some(Self::SynchFrame),
-            _ => None,
+    pub const fn standard_from_u8(b_request: u8) -> Self {
+        match b_request {
+            0 => Self::GetStatus,
+            URB_RQ_CLEAR_FEATURE => Self::ClearFeature,
+            URB_RQ_SET_FEATURE => Self::SetFeature,
+            URB_RQ_SET_ADDRESS => Self::SetAddress,
+            URB_RQ_GET_DESCRIPTOR => Self::GetDescriptor,
+            URB_RQ_SET_DESCRIPTOR => Self::SetDescriptor,
+            URB_RQ_GET_CONFIGURATION => Self::GetConfiguration,
+            URB_RQ_SET_CONFIGURATION => Self::SetConfiguration,
+            URB_RQ_GET_INTERFACE => Self::GetInterface,
+            URB_RQ_SET_INTERFACE => Self::SetInterface,
+            URB_RQ_SYNCH_FRAME => Self::SynchFrame,
+            _ => Self::Other(b_request),
+        }
+    }
+
+    pub const fn class_from_u8(b_request: u8) -> Req {
+        match b_request {
+            0xFF => Self::BulkOnlyMassStorageReset,
+            0xFE => Self::GetMaxLun,
+            _ => Self::Other(b_request),
         }
     }
 }
-
-pub type UsbReq = ((Dir, CtrlType, Recipient), Req);
-
-pub const STANDARD_DEVICE_GET_STATUS: UsbReq = (
-    (Dir::In, CtrlType::Standard, Recipient::Device),
-    Req::GetStatus,
-);
-
-pub const STANDARD_DEVICE_CLEAR_FEATURE: UsbReq = (
-    (Dir::Out, CtrlType::Standard, Recipient::Device),
-    Req::ClearFeature,
-);
-
-pub const STANDARD_DEVICE_SET_FEATURE: UsbReq = (
-    (Dir::Out, CtrlType::Standard, Recipient::Device),
-    Req::SetFeature,
-);
-
-pub const STANDARD_DEVICE_SET_ADDRESS: UsbReq = (
-    (Dir::Out, CtrlType::Standard, Recipient::Device),
-    Req::SetAddress,
-);
-
-pub const STANDARD_DEVICE_GET_DESCRIPTOR: UsbReq = (
-    (Dir::In, CtrlType::Standard, Recipient::Device),
-    Req::GetDescriptor,
-);
-
-pub const STANDARD_DEVICE_SET_DESCRIPTOR: UsbReq = (
-    (Dir::Out, CtrlType::Standard, Recipient::Device),
-    Req::SetDescriptor,
-);
-
-pub const STANDARD_DEVICE_GET_CONFIGURATION: UsbReq = (
-    (Dir::In, CtrlType::Standard, Recipient::Device),
-    Req::GetConfiguration,
-);
-
-pub const STANDARD_DEVICE_SET_CONFIGURATION: UsbReq = (
-    (Dir::Out, CtrlType::Standard, Recipient::Device),
-    Req::SetConfiguration,
-);
-
-pub const STANDARD_INTERFACE_GET_STATUS: UsbReq = (
-    (Dir::In, CtrlType::Standard, Recipient::Interface),
-    Req::GetStatus,
-);
-
-pub const STANDARD_INTERFACE_CLEAR_FEATURE: UsbReq = (
-    (Dir::Out, CtrlType::Standard, Recipient::Interface),
-    Req::ClearFeature,
-);
-
-pub const STANDARD_INTERFACE_SET_FEATURE: UsbReq = (
-    (Dir::Out, CtrlType::Standard, Recipient::Interface),
-    Req::SetFeature,
-);
-
-pub const STANDARD_INTERFACE_GET_INTERFACE: UsbReq = (
-    (Dir::In, CtrlType::Standard, Recipient::Interface),
-    Req::GetInterface,
-);
-
-pub const STANDARD_INTERFACE_SET_INTERFACE: UsbReq = (
-    (Dir::Out, CtrlType::Standard, Recipient::Interface),
-    Req::SetInterface,
-);
-
-pub const STANDARD_ENDPOINT_GET_STATUS: UsbReq = (
-    (Dir::In, CtrlType::Standard, Recipient::Endpoint),
-    Req::GetStatus,
-);
-
-pub const STANDARD_ENDPOINT_CLEAR_FEATURE: UsbReq = (
-    (Dir::Out, CtrlType::Standard, Recipient::Endpoint),
-    Req::ClearFeature,
-);
-
-pub const STANDARD_ENDPOINT_SET_FEATURE: UsbReq = (
-    (Dir::Out, CtrlType::Standard, Recipient::Endpoint),
-    Req::SetFeature,
-);
-
-pub const STANDARD_ENDPOINT_SYNCH_FRAME: UsbReq = (
-    (Dir::In, CtrlType::Standard, Recipient::Endpoint),
-    Req::SynchFrame,
-);

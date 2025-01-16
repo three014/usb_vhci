@@ -9,7 +9,7 @@ use nix::{ioctl_readwrite, ioctl_write_ptr};
 use zerocopy_derive::*;
 
 use crate::{
-    usbfs::{CtrlType, Dir, Recipient, Req},
+    usbfs::{CtrlType, Dir, Recipient, Req, Request},
     utils::BoundedU8,
     Port, PortChange, PortFlag, PortStatus,
 };
@@ -156,28 +156,12 @@ pub struct IocSetupPacket {
 }
 
 impl IocSetupPacket {
-    pub const fn request_type(&self) -> (Dir, CtrlType, Recipient) {
-        (self.direction(), self.control_type(), self.recipient())
-    }
-
     #[inline(always)]
-    pub const fn req(&self) -> Option<Req> {
-        Req::from_u8(self.b_request)
-    }
-
-    #[inline(always)]
-    pub const fn control_type(&self) -> CtrlType {
-        CtrlType::from_u8((self.bm_request_type & 0x60) >> 5).unwrap()
-    }
-
-    #[inline(always)]
-    pub const fn direction(&self) -> Dir {
-        Dir::from_u8((self.bm_request_type & 0x80) >> 7).unwrap()
-    }
-
-    #[inline(always)]
-    pub const fn recipient(&self) -> Recipient {
-        Recipient::from_u8(self.bm_request_type & 0x1F).unwrap()
+    pub const fn req(&self) -> Request {
+        Request {
+            bm_request_type: self.bm_request_type,
+            b_request: self.b_request,
+        }
     }
 
     #[inline(always)]
@@ -198,7 +182,6 @@ impl IocSetupPacket {
 impl std::fmt::Debug for IocSetupPacket {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("IocSetupPacket")
-            .field("request_type", &self.request_type())
             .field("request", &self.req())
             .field("value", &self.value())
             .field("index", &self.index())
