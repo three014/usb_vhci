@@ -161,8 +161,8 @@ impl IocSetupPacket {
     }
 
     #[inline(always)]
-    pub const fn req(&self) -> Req {
-        Req::from_u8(self.b_request).unwrap()
+    pub const fn req(&self) -> Option<Req> {
+        Req::from_u8(self.b_request)
     }
 
     #[inline(always)]
