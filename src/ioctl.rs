@@ -41,17 +41,17 @@ pub const USB_VHCI_WORK_TYPE_PORT_STAT: u8 = 0;
 pub const USB_VHCI_WORK_TYPE_PROCESS_URB: u8 = 1;
 pub const USB_VHCI_WORK_TYPE_CANCEL_URB: u8 = 2;
 
-pub const URB_RQ_GET_STATUS: u8 = 0;
-pub const URB_RQ_CLEAR_FEATURE: u8 = 1;
-pub const URB_RQ_SET_FEATURE: u8 = 3;
-pub const URB_RQ_SET_ADDRESS: u8 = 5;
-pub const URB_RQ_GET_DESCRIPTOR: u8 = 6;
-pub const URB_RQ_SET_DESCRIPTOR: u8 = 7;
-pub const URB_RQ_GET_CONFIGURATION: u8 = 8;
-pub const URB_RQ_SET_CONFIGURATION: u8 = 9;
-pub const URB_RQ_GET_INTERFACE: u8 = 10;
-pub const URB_RQ_SET_INTERFACE: u8 = 11;
-pub const URB_RQ_SYNCH_FRAME: u8 = 12;
+pub const URB_RQ_GET_STATUS: u8 = 0x00;
+pub const URB_RQ_CLEAR_FEATURE: u8 = 0x01;
+pub const URB_RQ_SET_FEATURE: u8 = 0x03;
+pub const URB_RQ_SET_ADDRESS: u8 = 0x05;
+pub const URB_RQ_GET_DESCRIPTOR: u8 = 0x06;
+pub const URB_RQ_SET_DESCRIPTOR: u8 = 0x07;
+pub const URB_RQ_GET_CONFIGURATION: u8 = 0x08;
+pub const URB_RQ_SET_CONFIGURATION: u8 = 0x09;
+pub const URB_RQ_GET_INTERFACE: u8 = 0x0A;
+pub const URB_RQ_SET_INTERFACE: u8 = 0x11;
+pub const URB_RQ_SYNCH_FRAME: u8 = 0x12;
 
 #[cfg_attr(
     feature = "zerocopy",
