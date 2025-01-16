@@ -118,7 +118,7 @@ impl Request {
     pub const fn req(&self) -> Req {
         match self.kind() {
             (_, CtrlType::Standard, _) => Req::standard_from_u8(self.b_request),
-            (Dir::Out, CtrlType::Class, Recipient::Interface) => Req::class_from_u8(self.b_request),
+            (_, CtrlType::Class, Recipient::Interface) => Req::class_from_u8(self.b_request),
             _ => Req::Other(self.b_request),
         }
     }
@@ -271,6 +271,8 @@ pub enum Req {
     GetInterface,
     SetInterface,
     SynchFrame,
+    GetRequests,
+    PutRequests,
     BulkOnlyMassStorageReset,
     GetMaxLun,
     Other(u8),
@@ -296,6 +298,8 @@ impl Req {
 
     pub const fn class_from_u8(b_request: u8) -> Req {
         match b_request {
+            0xFC => Self::GetRequests,
+            0xFD => Self::PutRequests,
             0xFF => Self::BulkOnlyMassStorageReset,
             0xFE => Self::GetMaxLun,
             _ => Self::Other(b_request),
