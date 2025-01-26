@@ -91,13 +91,13 @@ impl Remote {
         let mut ioc_giveback = ioctl::IocGiveback {
             handle: urb.handle().get(),
             status: urb.status().to_errno_raw(ioctl::UrbType::Iso == urb.kind()),
+            buffer_actual: buffer_len.try_into().unwrap(),
             ..Default::default()
         };
 
 
         if Dir::In == urb.endpoint().direction() && 0 < buffer_len {
             ioc_giveback.buffer = urb.transfer_mut().as_mut_ptr().cast();
-            ioc_giveback.buffer_actual = buffer_len.try_into().unwrap();
         }
 
         if ioctl::UrbType::Iso == urb.kind() {
