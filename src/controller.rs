@@ -7,7 +7,7 @@ use std::{
 use bit_vec::BitVec;
 
 use crate::{
-    ioctl, usbfs::Dir, utils::{BoundedI16, BoundedU8, TimeoutMillis}, DataRate, IsoPacketDataMut, IsoPacketGivebackMut, Port, PortChange, PortStatus, TransferMut, Urb, MAX_ISO_PACKETS
+    ioctl::{self, UrbType}, usbfs::Dir, utils::{BoundedI16, BoundedU8, TimeoutMillis}, DataRate, IsoPacketDataMut, IsoPacketGivebackMut, Port, PortChange, PortStatus, TransferMut, Urb, MAX_ISO_PACKETS
 };
 
 static USB_VHCI_DEVICE_FILE: &str = "/dev/usb-vhci";
@@ -85,7 +85,7 @@ impl Remote {
 
     pub fn giveback(&self, mut urb: impl Urb + IsoPacketGivebackMut + TransferMut) -> io::Result<()> {
         let packet_count = urb.iso_packet_giveback_mut().len();
-        let buffer_len = urb.transfer_mut().len();
+        let buffer_len = urb.bytes_transferred();
         assert!(packet_count <= MAX_ISO_PACKETS);
 
         let mut ioc_giveback = ioctl::IocGiveback {
@@ -95,8 +95,8 @@ impl Remote {
             ..Default::default()
         };
 
-
-        if Dir::In == urb.endpoint().direction() && 0 < buffer_len {
+        if Dir::In == urb.dir() && 0 < buffer_len {
+            assert_eq!(buffer_len as usize, urb.transfer_mut().len());
             ioc_giveback.buffer = urb.transfer_mut().as_mut_ptr().cast();
         }
 
