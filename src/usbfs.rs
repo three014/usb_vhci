@@ -275,6 +275,10 @@ pub enum Req {
     PutRequests,
     BulkOnlyMassStorageReset,
     GetMaxLun,
+    UacSetCur,
+    UacGetCur,
+    UacGetMin,
+    UacGetMax,
     Other(u8),
 }
 
@@ -298,6 +302,10 @@ impl Req {
 
     pub const fn class_from_u8(b_request: u8) -> Req {
         match b_request {
+            0x01 => Self::UacSetCur,
+            0x81 => Self::UacGetCur,
+            0x82 => Self::UacGetMin,
+            0x83 => Self::UacGetMax,
             0xFC => Self::GetRequests,
             0xFD => Self::PutRequests,
             0xFF => Self::BulkOnlyMassStorageReset,
