@@ -118,7 +118,7 @@ impl Request {
     pub const fn req(&self) -> Req {
         match self.kind() {
             (_, CtrlType::Standard, _) => Req::standard_from_u8(self.b_request),
-            (_, CtrlType::Class, Recipient::Interface) => Req::class_from_u8(self.b_request),
+            (dir, CtrlType::Class, Recipient::Interface) => Req::class_from_u8(dir, self.b_request),
             _ => Req::Other(self.b_request),
         }
     }
@@ -277,8 +277,15 @@ pub enum Req {
     GetMaxLun,
     UacSetCur,
     UacGetCur,
+    UacSetMin,
     UacGetMin,
+    UacSetMax,
     UacGetMax,
+    UacSetRes,
+    UacGetRes,
+    UacSetIdle,
+    GetReport,
+    SetReport,
     Other(u8),
 }
 
@@ -300,17 +307,24 @@ impl Req {
         }
     }
 
-    pub const fn class_from_u8(b_request: u8) -> Req {
-        match b_request {
-            0x01 => Self::UacSetCur,
-            0x81 => Self::UacGetCur,
-            0x82 => Self::UacGetMin,
-            0x83 => Self::UacGetMax,
-            0xFC => Self::GetRequests,
-            0xFD => Self::PutRequests,
-            0xFF => Self::BulkOnlyMassStorageReset,
-            0xFE => Self::GetMaxLun,
-            _ => Self::Other(b_request),
+    pub const fn class_from_u8(dir: Dir, b_request: u8) -> Req {
+        match (dir, b_request) {
+            (Dir::Out, 0x01) => Self::UacSetCur,
+            (Dir::In, 0x01) => Self::GetReport,
+            (_, 0x02) => Self::UacSetMin,
+            (_, 0x03) => Self::UacSetMax,
+            (_, 0x04) => Self::UacSetRes,
+            (_, 0x09) => Self::SetReport,
+            (_, 0x0A) => Self::UacSetIdle,
+            (_, 0x81) => Self::UacGetCur,
+            (_, 0x82) => Self::UacGetMin,
+            (_, 0x83) => Self::UacGetMax,
+            (_, 0x84) => Self::UacGetRes,
+            (_, 0xFC) => Self::GetRequests,
+            (_, 0xFD) => Self::PutRequests,
+            (_, 0xFF) => Self::BulkOnlyMassStorageReset,
+            (_, 0xFE) => Self::GetMaxLun,
+            _ => Self::standard_from_u8(b_request),
         }
     }
 }
