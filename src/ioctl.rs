@@ -50,8 +50,8 @@ pub const URB_RQ_SET_DESCRIPTOR: u8 = 0x07;
 pub const URB_RQ_GET_CONFIGURATION: u8 = 0x08;
 pub const URB_RQ_SET_CONFIGURATION: u8 = 0x09;
 pub const URB_RQ_GET_INTERFACE: u8 = 0x0A;
-pub const URB_RQ_SET_INTERFACE: u8 = 0x11;
-pub const URB_RQ_SYNCH_FRAME: u8 = 0x12;
+pub const URB_RQ_SET_INTERFACE: u8 = 0x0B;
+pub const URB_RQ_SYNCH_FRAME: u8 = 0x0C;
 
 #[cfg_attr(
     feature = "zerocopy",
