@@ -76,7 +76,7 @@ impl Request {
 
     pub const STANDARD_INTERFACE_SET_INTERFACE: Self = Self {
         bm_request_type: 0x01,
-        b_request: 0x11,
+        b_request: 0x0B,
     };
 
     pub const STANDARD_ENDPOINT_GET_STATUS: Self = Self {
@@ -96,7 +96,7 @@ impl Request {
 
     pub const STANDARD_ENDPOINT_SYNCH_FRAME: Self = Self {
         bm_request_type: 0x82,
-        b_request: 0x12,
+        b_request: 0x0C,
     };
 
     pub const fn kind(&self) -> (Dir, CtrlType, Recipient) {
