@@ -1,7 +1,7 @@
 use crate::ioctl::{
     URB_RQ_CLEAR_FEATURE, URB_RQ_GET_CONFIGURATION, URB_RQ_GET_DESCRIPTOR, URB_RQ_GET_INTERFACE,
-    URB_RQ_SET_ADDRESS, URB_RQ_SET_CONFIGURATION, URB_RQ_SET_DESCRIPTOR, URB_RQ_SET_FEATURE,
-    URB_RQ_SET_INTERFACE, URB_RQ_SYNCH_FRAME,
+    URB_RQ_GET_STATUS, URB_RQ_SET_ADDRESS, URB_RQ_SET_CONFIGURATION, URB_RQ_SET_DESCRIPTOR,
+    URB_RQ_SET_FEATURE, URB_RQ_SET_INTERFACE, URB_RQ_SYNCH_FRAME,
 };
 
 #[cfg(feature = "zerocopy")]
@@ -16,87 +16,87 @@ pub struct Request {
 impl Request {
     pub const STANDARD_DEVICE_GET_STATUS: Self = Self {
         bm_request_type: 0x80,
-        b_request: 0x00,
+        b_request: URB_RQ_GET_STATUS,
     };
 
     pub const STANDARD_DEVICE_CLEAR_FEATURE: Self = Self {
         bm_request_type: 0x00,
-        b_request: 0x01,
+        b_request: URB_RQ_CLEAR_FEATURE,
     };
 
     pub const STANDARD_DEVICE_SET_FEATURE: Self = Self {
         bm_request_type: 0x00,
-        b_request: 0x03,
+        b_request: URB_RQ_SET_FEATURE,
     };
 
     pub const STANDARD_DEVICE_SET_ADDRESS: Self = Self {
         bm_request_type: 0x00,
-        b_request: 0x05,
+        b_request: URB_RQ_SET_ADDRESS,
     };
 
     pub const STANDARD_DEVICE_GET_DESCRIPTOR: Self = Self {
         bm_request_type: 0x80,
-        b_request: 0x06,
+        b_request: URB_RQ_GET_DESCRIPTOR,
     };
 
     pub const STANDARD_DEVICE_SET_DESCRIPTOR: Self = Self {
         bm_request_type: 0x00,
-        b_request: 0x07,
+        b_request: URB_RQ_GET_DESCRIPTOR,
     };
 
     pub const STANDARD_DEVICE_GET_CONFIGURATION: Self = Self {
         bm_request_type: 0x80,
-        b_request: 0x08,
+        b_request: URB_RQ_GET_CONFIGURATION,
     };
 
     pub const STANDARD_DEVICE_SET_CONFIGURATION: Self = Self {
         bm_request_type: 0x00,
-        b_request: 0x09,
+        b_request: URB_RQ_SET_CONFIGURATION,
     };
 
     pub const STANDARD_INTERFACE_GET_STATUS: Self = Self {
         bm_request_type: 0x81,
-        b_request: 0x00,
+        b_request: URB_RQ_GET_STATUS,
     };
 
     pub const STANDARD_INTERFACE_CLEAR_FEATURE: Self = Self {
         bm_request_type: 0x01,
-        b_request: 0x01,
+        b_request: URB_RQ_CLEAR_FEATURE,
     };
 
     pub const STANDARD_INTERFACE_SET_FEATURE: Self = Self {
         bm_request_type: 0x01,
-        b_request: 0x03,
+        b_request: URB_RQ_SET_FEATURE,
     };
 
     pub const STANDARD_INTERFACE_GET_INTERFACE: Self = Self {
         bm_request_type: 0x81,
-        b_request: 0x0A,
+        b_request: URB_RQ_GET_INTERFACE,
     };
 
     pub const STANDARD_INTERFACE_SET_INTERFACE: Self = Self {
         bm_request_type: 0x01,
-        b_request: 0x0B,
+        b_request: URB_RQ_SET_INTERFACE,
     };
 
     pub const STANDARD_ENDPOINT_GET_STATUS: Self = Self {
         bm_request_type: 0x82,
-        b_request: 0x00,
+        b_request: URB_RQ_GET_STATUS,
     };
 
     pub const STANDARD_ENDPOINT_CLEAR_FEATURE: Self = Self {
         bm_request_type: 0x02,
-        b_request: 0x01,
+        b_request: URB_RQ_CLEAR_FEATURE,
     };
 
     pub const STANDARD_ENDPOINT_SET_FEATURE: Self = Self {
         bm_request_type: 0x02,
-        b_request: 0x03,
+        b_request: URB_RQ_SET_FEATURE,
     };
 
     pub const STANDARD_ENDPOINT_SYNCH_FRAME: Self = Self {
         bm_request_type: 0x82,
-        b_request: 0x0C,
+        b_request: URB_RQ_SYNCH_FRAME,
     };
 
     pub const fn kind(&self) -> (Dir, CtrlType, Recipient) {
